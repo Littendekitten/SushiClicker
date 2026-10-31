@@ -29,6 +29,7 @@ const SPAWN_EVERY = 2;     // seconds between sushi from one rice cooker
 const MAX_SUSHI = 80;      // safety limit so the page never gets slow
 const COMPLETE_BOOST = 2;  // a rice ball that meets a fish becomes complete sushi: its value is multiplied by this
 const MAX_AGE = 60;        // sushi older than this many seconds disappears (stops endless loops)
+const TABLE_EVERY = 1;     // a chopping table sends out one spectacular sushi every second (everything it sold since, packed together)
 
 // The anvil: a one-time unlock in the shop
 const ANVIL_COST = 100000000; // 100 million
@@ -90,8 +91,12 @@ function emptyGrid() {
 //   grid:    COLS * ROWS squares, each null or { kind, dir, mods, table }
 //            (table is only on chopping tables: it is the layer inside that table)
 //   sushi, timers, effects: what is going on on this floor right now (these are never saved)
+//   inner:   true when this floor is the inside of a chopping table (set by runFactory)
+//   bank:    what the inside of a table sold since it last sent a sushi out (sales in a table are not paid
+//            directly: they are packed into the table's next sushi)
+//   pulses:  when each table last sent a sushi (for the little flash)
 function newLayer() {
-    return { grid: emptyGrid(), sushi: [], timers: {}, effects: [] };
+    return { grid: emptyGrid(), sushi: [], timers: {}, effects: [], inner: false, bank: 0, pulses: {} };
 }
 
 // The floor you are looking at: the main factory, or the inside of the table you opened
@@ -1157,7 +1162,7 @@ function inGrid(x, y) {
     return x >= 0 && y >= 0 && x < COLS && y < ROWS;
 }
 
-// Sushi can enter any piece except a rice cooker or a chopping table
+// Sushi can enter any piece except a rice cooker or a chopping table (those only send sushi out)
 function passable(layer, x, y) {
     if (!inGrid(x, y)) {
         return false;
@@ -1240,7 +1245,7 @@ function clickSquare(x, y) {
     // A piece
     if (cell) {
         // Clicking a belt or rice cooker with the same piece turns it
-        if (cell.kind === def.id && (def.role === 'belt' || def.role === 'source')) {
+        if (cell.kind === def.id && (def.role === 'belt' || def.role === 'source' || def.role === 'table')) {
             cell.dir = rotation;
             unsaved = true;
         } else {
@@ -1254,7 +1259,7 @@ function clickSquare(x, y) {
         showMessage("A chopping table can't go inside itself.");
         return;
     }
-    layer.grid[index] = { kind: def.id, dir: isTable ? 0 : rotation, mods: [] };
+    layer.grid[index] = { kind: def.id, dir: rotation, mods: [] };
     if (isTable) {
         layer.grid[index].table = stack.table; // the inside moves with it
     }
@@ -1305,7 +1310,8 @@ function speedMultiplier(cell) {
     return m;
 }
 
-function trySpawn(layer, sx, sy, dir, value) {
+// special = true: a spectacular sushi from a chopping table (already complete, drawn with a lot of sparkle)
+function trySpawn(layer, sx, sy, dir, value, special) {
     const tx = sx + DX[dir];
     const ty = sy + DY[dir];
     if (!passable(layer, tx, ty) || layer.sushi.length >= MAX_SUSHI) {
@@ -1316,7 +1322,9 @@ function trySpawn(layer, sx, sy, dir, value) {
         dx: DX[dir], dy: DY[dir],
         p: 0, value: value, age: 0,
         seen: [],                          // machines it already passed (each gives its bonus once)
-        complete: false,                   // false = a plain rice ball, true = sushi (it passed a fish)
+        complete: !!special,               // false = a plain rice ball, true = sushi (it passed a fish)
+        special: !!special,                // true = packed from a whole chopping table
+        seed: Math.random() * 6.28,        // makes every spectacular sushi sparkle a little differently
         waiting: false,                    // true when it has reached the end of a belt
         jx: (Math.random() - 0.5) * 0.3,   // small random offset so waiting sushi form a little pile
         jy: (Math.random() - 0.5) * 0.3,
@@ -1352,10 +1360,18 @@ function tryDepart(layer, s) {
 function sell(layer, s, x, y, multiplier) {
     const now = performance.now() / 1000;
     const gained = s.value * multiplier;
-    points = points + gained;
-    salesLog.push({ t: now, v: gained });
+    if (layer.inner) {
+        layer.bank = layer.bank + gained; // inside a chopping table: packed into the table's next sushi
+    } else {
+        points = points + gained;
+        salesLog.push({ t: now, v: gained });
+    }
     if (layer === viewLayer()) {
-        layer.effects.push({ x: x, y: y, text: '+' + formatRate(gained), age: 0 }); // only if you can see it
+        // only if you can see it. A spectacular sushi gets a big golden popup with a burst of stars.
+        layer.effects.push({
+            x: x, y: y, text: '+' + formatRate(gained), age: 0,
+            big: !!s.special, life: s.special ? 1.5 : 0.9, seed: Math.random() * 6.28
+        });
     }
     unsaved = true;
     displayDirty = true;
@@ -1441,6 +1457,21 @@ function runLayer(layer, dt) {
                     break;
                 }
             }
+        } else if (cell && roleOf(cell) === 'table') {
+            // A chopping table works like a rice cooker, but it sends out ONE sushi per second:
+            // everything its inside sold since the last one, packed together.
+            const inside = cell.table;
+            let t = Math.min((layer.timers[i] || 0) + dt, TABLE_EVERY); // no stored-up extra sushi: the bank holds the value
+            if (t >= TABLE_EVERY && inside && inside.bank > 0) {
+                const x = i % COLS;
+                const y = Math.floor(i / COLS);
+                if (trySpawn(layer, x, y, cell.dir, inside.bank, true)) {
+                    inside.bank = 0;
+                    t = 0;
+                    layer.pulses[i] = performance.now() / 1000;
+                } // blocked: keep the value in the bank and try again next step
+            }
+            layer.timers[i] = t;
         } else {
             delete layer.timers[i];
         }
@@ -1459,7 +1490,7 @@ function runLayer(layer, dt) {
         effect.age = effect.age + dt;
     }
     layer.effects = layer.effects.filter(function (effect) {
-        return effect.age < 0.9;
+        return effect.age < (effect.life || 0.9);
     });
 }
 
@@ -1469,6 +1500,7 @@ function runFactory(dt) {
     const floors = [rootLayer];
     // A table you are editing from your Inventory is not placed anywhere, but it works while you watch it
     if (viewPath.length > 0 && viewOrigin === 'inventory' && currentScreen === 'game-screen') {
+        viewPath[0].inner = true;
         floors.push(viewPath[0]);
     }
     while (floors.length > 0) {
@@ -1476,6 +1508,7 @@ function runFactory(dt) {
         runLayer(floor, dt);
         for (const cell of floor.grid) {
             if (cell && cell.table) {
+                cell.table.inner = true; // what it sells is packed into the table's sushi
                 floors.push(cell.table);
             }
         }
@@ -1562,8 +1595,25 @@ function drawMods(x, y, mods) {
 // Brighter colours for the little factory drawn on a chopping table (the real ones are too dark)
 const MINI_COLOUR = { belt: '#8fa89a', source: '#7fd1a0', topping: '#6fb7e0', exit: '#ff9c6e', table: '#d9b26f' };
 
-// A chopping table: a wooden tile with a tiny picture of what is inside it
-function drawTable(x, y, table) {
+// A four-pointed sparkle star
+function drawStar(cx, cy, r, colour, alpha) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.fillStyle = colour;
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4 - Math.PI / 2;
+        const rr = k % 2 === 0 ? r : r * 0.28;
+        ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
+
+// A chopping table: a wooden tile with a tiny picture of what is inside it.
+// Like a rice cooker it shows which way it sends sushi, and it flashes when it sends one.
+function drawTable(x, y, table, dir, time, pulse) {
     ctx.fillStyle = TILE_BY_ID[TABLE_ID].colour;
     roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
     ctx.fill();
@@ -1583,10 +1633,37 @@ function drawTable(x, y, table) {
         }
     }
     drawEmoji(TILE_BY_ID[TABLE_ID].emoji, x + CELL - 11, y + CELL - 10, 12);
+
+    // The flash when a sushi goes out
+    const since = pulse ? time - pulse : 99;
+    if (since < 0.45) {
+        const k = since / 0.45;
+        ctx.strokeStyle = 'rgba(255, 226, 120, ' + (1 - k) + ')';
+        ctx.lineWidth = 3;
+        roundedRect(x + 2 - k * 4, y + 2 - k * 4, CELL - 4 + k * 8, CELL - 4 + k * 8, 10 + k * 4);
+        ctx.stroke();
+    }
+
+    // The arrow: which way the sushi comes out (golden, so it stands out on the wood)
+    ctx.save();
+    ctx.translate(x + CELL / 2, y + CELL / 2);
+    ctx.rotate((dir || 0) * Math.PI / 2);
+    ctx.fillStyle = '#ffd34d';
+    ctx.strokeStyle = '#3b2a12';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(CELL * 0.27, -8);
+    ctx.lineTo(CELL * 0.47, 0);
+    ctx.lineTo(CELL * 0.27, 8);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fill();
+    ctx.restore();
 }
 
 // Draws one piece in the square at (gx, gy). table: the inside of a chopping table (to draw it small)
-function drawPiece(kind, dir, gx, gy, time, mods, table) {
+function drawPiece(kind, dir, gx, gy, time, mods, table, pulse) {
     const x = gx * CELL;
     const y = gy * CELL;
     const cx = x + CELL / 2;
@@ -1594,7 +1671,7 @@ function drawPiece(kind, dir, gx, gy, time, mods, table) {
 
     const def = TILE_BY_ID[kind];
     if (def.role === 'table') {
-        drawTable(x, y, table);
+        drawTable(x, y, table, dir, time, pulse);
         return;
     }
     if (def.role === 'belt') {
@@ -1647,6 +1724,76 @@ function drawPiece(kind, dir, gx, gy, time, mods, table) {
         ctx.fill();
         ctx.restore();
     }
+}
+
+// The spectacular sushi a chopping table sends out: a glowing golden nigiri with spinning rays and sparkles
+function drawSuperSushi(cx, cy, value, time, seed) {
+    const beat = 0.5 + 0.5 * Math.sin(time * 6 + seed);
+    const r = CELL * (0.62 + 0.07 * beat);
+
+    // Warm glow
+    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+    glow.addColorStop(0, 'rgba(255, 244, 180, 0.95)');
+    glow.addColorStop(0.5, 'rgba(255, 190, 60, 0.4)');
+    glow.addColorStop(1, 'rgba(255, 140, 40, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Spinning rays
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(time * 1.3 + seed);
+    ctx.fillStyle = 'rgba(255, 228, 120, 0.4)';
+    for (let k = 0; k < 8; k++) {
+        ctx.rotate(Math.PI / 4);
+        ctx.beginPath();
+        ctx.moveTo(-2.5, -r * 0.3);
+        ctx.lineTo(0, -r * 1.05);
+        ctx.lineTo(2.5, -r * 0.3);
+        ctx.closePath();
+        ctx.fill();
+    }
+    ctx.restore();
+
+    // The nigiri (bigger than a normal one): rice below, a shimmering topping on top
+    const w = CELL * 0.72;
+    const h = CELL * 0.4;
+    ctx.fillStyle = '#fffaf0';
+    roundedRect(cx - w / 2, cy - h / 2 + 4, w, h * 0.75, 7);
+    ctx.fill();
+    const slide = (time * 0.8 + seed) % 1;
+    const top = ctx.createLinearGradient(cx - w / 2, cy, cx + w / 2, cy);
+    top.addColorStop(0, '#ff6a3d');
+    top.addColorStop(Math.max(0.01, slide - 0.25), '#ff8a4d');
+    top.addColorStop(slide, '#ffe08a');
+    top.addColorStop(Math.min(0.99, slide + 0.25), '#ff8a4d');
+    top.addColorStop(1, '#ff5d6e');
+    ctx.fillStyle = top;
+    roundedRect(cx - w / 2 - 2, cy - h / 2 - 5, w + 4, h * 0.65, 7);
+    ctx.fill();
+    ctx.strokeStyle = '#ffd34d';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Sparkles circling it
+    for (let k = 0; k < 4; k++) {
+        const a = time * 2.2 + seed + k * Math.PI / 2;
+        const twinkle = 0.5 + 0.5 * Math.sin(time * 9 + k * 2 + seed);
+        drawStar(cx + Math.cos(a) * r * 0.78, cy + Math.sin(a) * r * 0.62, 4 + 4 * twinkle, '#fff6c2', 0.5 + 0.5 * twinkle);
+    }
+
+    // Its value, big and golden
+    const text = formatRate(value);
+    ctx.font = '700 15px Fredoka, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#3b2a12';
+    ctx.strokeText(text, cx, cy - h / 2 - 17);
+    ctx.fillStyle = '#ffe27a';
+    ctx.fillText(text, cx, cy - h / 2 - 17);
 }
 
 // A little piece of nigiri
@@ -1717,7 +1864,7 @@ function draw() {
     for (let i = 0; i < layer.grid.length; i++) {
         const cell = layer.grid[i];
         if (cell) {
-            drawPiece(cell.kind, cell.dir, i % COLS, Math.floor(i / COLS), time, cell.mods, cell.table);
+            drawPiece(cell.kind, cell.dir, i % COLS, Math.floor(i / COLS), time, cell.mods, cell.table, layer.pulses[i]);
         }
     }
 
@@ -1732,20 +1879,41 @@ function draw() {
             gx = s.x + (s.tx - s.x) * s.p;
             gy = s.y + (s.ty - s.y) * s.p;
         }
-        drawSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, s.complete);
+        if (s.special) {
+            drawSuperSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, time, s.seed);
+        } else {
+            drawSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, s.complete);
+        }
     }
 
     // "+5" popups
     for (const effect of layer.effects) {
+        const life = effect.life || 0.9;
         const rise = effect.age * 40;
-        ctx.globalAlpha = 1 - effect.age / 0.9;
-        ctx.font = '700 18px Fredoka, system-ui, sans-serif';
+        const fade = 1 - effect.age / life;
+        if (effect.big) {
+            // A spectacular sushi was sold: a ring, a burst of stars and big golden text
+            const bx = (effect.x + 0.5) * CELL;
+            const by = (effect.y + 0.5) * CELL;
+            ctx.strokeStyle = 'rgba(255, 226, 120, ' + (fade * 0.8) + ')';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(bx, by, 8 + effect.age * 70, 0, Math.PI * 2);
+            ctx.stroke();
+            for (let k = 0; k < 10; k++) {
+                const a = effect.seed + k * Math.PI / 5;
+                const d = 10 + effect.age * (50 + (k % 3) * 25);
+                drawStar(bx + Math.cos(a) * d, by + Math.sin(a) * d, 6 - effect.age * 2, k % 2 === 0 ? '#ffe27a' : '#fff6c2', fade);
+            }
+        }
+        ctx.globalAlpha = fade;
+        ctx.font = (effect.big ? '700 26px' : '700 18px') + ' Fredoka, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = '#0f1f1a';
+        ctx.lineWidth = effect.big ? 6 : 4;
+        ctx.strokeStyle = effect.big ? '#3b2a12' : '#0f1f1a';
         ctx.strokeText(effect.text, (effect.x + 0.5) * CELL, effect.y * CELL - rise + 8);
-        ctx.fillStyle = '#b7e05a';
+        ctx.fillStyle = effect.big ? '#ffe27a' : '#b7e05a';
         ctx.fillText(effect.text, (effect.x + 0.5) * CELL, effect.y * CELL - rise + 8);
         ctx.globalAlpha = 1;
     }

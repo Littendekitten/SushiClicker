@@ -26,7 +26,10 @@ const MAX_SAVE_CHARS = 900000; // a Firestore document can hold about 1 million 
 // How the sushi moves
 const SPEED = 1.5;         // squares per second
 const SPAWN_EVERY = 2;     // seconds between sushi from one rice cooker
-const MAX_SUSHI = 80;      // safety limit so the page never gets slow
+const MAX_SUSHI = 80;      // safety limit so the page never gets slow (normal sushi, per floor)
+const MAX_SPECIAL = 1000;  // the same for the spectacular sushi from chopping tables. They have their own, much bigger
+                           // limit, so a floor full of tables never runs out of room and skips sushi.
+const LITE_AFTER = 40;     // with more spectacular sushi than this on the floor you are watching, they are drawn simpler
 const COMPLETE_BOOST = 2;  // a rice ball that meets a fish becomes complete sushi: its value is multiplied by this
 const MAX_AGE = 60;        // sushi older than this many seconds disappears (stops endless loops)
 const TABLE_EVERY = 1;     // a chopping table sends out one spectacular sushi every second (everything it sold since, packed together)
@@ -96,7 +99,7 @@ function emptyGrid() {
 //            directly: they are packed into the table's next sushi)
 //   pulses:  when each table last sent a sushi (for the little flash)
 function newLayer() {
-    return { grid: emptyGrid(), sushi: [], timers: {}, effects: [], inner: false, bank: 0, pulses: {} };
+    return { grid: emptyGrid(), sushi: [], timers: {}, effects: [], inner: false, bank: 0, pulses: {}, nSpecial: 0 };
 }
 
 // The floor you are looking at: the main factory, or the inside of the table you opened
@@ -1422,8 +1425,13 @@ function trySpawn(layer, sx, sy, dir, value, special) {
     }
     const tx = sx + DX[dir] * steps;
     const ty = sy + DY[dir] * steps;
-    if (!passable(layer, tx, ty) || layer.sushi.length >= MAX_SUSHI) {
+    const special_n = layer.nSpecial || 0;
+    const full = special ? special_n >= MAX_SPECIAL : layer.sushi.length - special_n >= MAX_SUSHI;
+    if (!passable(layer, tx, ty) || full) {
         return false; // nowhere to put it
+    }
+    if (special) {
+        layer.nSpecial = special_n + 1;
     }
     layer.sushi.push({
         x: sx, y: sy, tx: tx, ty: ty,
@@ -1595,6 +1603,13 @@ function runLayer(layer, dt) {
     layer.sushi = layer.sushi.filter(function (s) {
         return !s.dead;
     });
+    let specials = 0;
+    for (const s of layer.sushi) {
+        if (s.special) {
+            specials++;
+        }
+    }
+    layer.nSpecial = specials;
 
     // Fade the "+5" popups
     for (const effect of layer.effects) {
@@ -1838,18 +1853,23 @@ function drawPiece(kind, dir, gx, gy, time, mods, table, pulse) {
 }
 
 // The spectacular sushi a chopping table sends out: a glowing golden nigiri with spinning rays and sparkles
-function drawSuperSushi(cx, cy, value, time, seed) {
+// lite = true when there are very many of them on the floor: no rays or number, a flat glow, one sparkle
+function drawSuperSushi(cx, cy, value, time, seed, lite) {
     const beat = 0.5 + 0.5 * Math.sin(time * 6 + seed);
     const r = CELL * (0.62 + 0.07 * beat);
 
     // Warm glow
-    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
-    glow.addColorStop(0, 'rgba(255, 244, 180, 0.95)');
-    glow.addColorStop(0.5, 'rgba(255, 190, 60, 0.4)');
-    glow.addColorStop(1, 'rgba(255, 140, 40, 0)');
-    ctx.fillStyle = glow;
+    if (lite) {
+        ctx.fillStyle = 'rgba(255, 200, 80, 0.35)';
+    } else {
+        const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+        glow.addColorStop(0, 'rgba(255, 244, 180, 0.95)');
+        glow.addColorStop(0.5, 'rgba(255, 190, 60, 0.4)');
+        glow.addColorStop(1, 'rgba(255, 140, 40, 0)');
+        ctx.fillStyle = glow;
+    }
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, lite ? r * 0.8 : r, 0, Math.PI * 2);
     ctx.fill();
 
     // Spinning rays
@@ -1857,7 +1877,7 @@ function drawSuperSushi(cx, cy, value, time, seed) {
     ctx.translate(cx, cy);
     ctx.rotate(time * 1.3 + seed);
     ctx.fillStyle = 'rgba(255, 228, 120, 0.4)';
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < (lite ? 0 : 8); k++) {
         ctx.rotate(Math.PI / 4);
         ctx.beginPath();
         ctx.moveTo(-2.5, -r * 0.3);
@@ -1889,13 +1909,16 @@ function drawSuperSushi(cx, cy, value, time, seed) {
     ctx.stroke();
 
     // Sparkles circling it
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < (lite ? 1 : 4); k++) {
         const a = time * 2.2 + seed + k * Math.PI / 2;
         const twinkle = 0.5 + 0.5 * Math.sin(time * 9 + k * 2 + seed);
         drawStar(cx + Math.cos(a) * r * 0.78, cy + Math.sin(a) * r * 0.62, 4 + 4 * twinkle, '#fff6c2', 0.5 + 0.5 * twinkle);
     }
 
     // Its value, big and golden
+    if (lite) {
+        return;
+    }
     const text = formatRate(value);
     ctx.font = '700 15px Fredoka, system-ui, sans-serif';
     ctx.textAlign = 'center';
@@ -1991,7 +2014,7 @@ function draw() {
             gy = s.y + (s.ty - s.y) * s.p;
         }
         if (s.special) {
-            drawSuperSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, time, s.seed);
+            drawSuperSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, time, s.seed, layer.nSpecial > LITE_AFTER);
         } else {
             drawSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, s.complete);
         }
@@ -2785,7 +2808,7 @@ async function redeemCode() {
                 return;
             }
         }
-        const newPoints = Math.min(points + reward.points, 999999999999999);
+        const newPoints = points + reward.points;
         const newChopsticks = Math.min(chopsticks + reward.chopsticks, 100000);
 
         // One batch: the "you used this" marker and your new save go in together or not at all
@@ -2795,7 +2818,7 @@ async function redeemCode() {
         await batch.commit();
 
         // It worked: give the reward in the game
-        points = Math.min(points + reward.points, 999999999999999);
+        points = points + reward.points;
         chopsticks = Math.min(chopsticks + reward.chopsticks, 100000);
         for (const item of reward.items) {
             if (!addToSlots(inventory, item.id, item.n)) {

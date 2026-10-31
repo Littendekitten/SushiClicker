@@ -87,7 +87,7 @@
                     with a serving counter to sell it.
                     Chopping tables are little factories: place one, press R to turn it, then use ✏️ Edit on it to build inside.
                     Everything that sells inside is packed into one spectacular sushi that comes out of the table every second:
-                    send it down belts to a serving counter.
+                    send it down belts to a serving counter. It flies over any other tables in its way.
                 </p>
                 <p id="factory-message" class="factory-message" aria-live="polite"></p>
             </div>
@@ -119,6 +119,13 @@
             <div id="inv-hotbar" class="slot-grid hotbar-row"></div>
             <p class="slot-label">Bag</p>
             <div id="inv-bag" class="slot-grid"></div>
+            <p class="slot-label">Trash</p>
+            <div class="trash-row">
+                <div id="trash-slot" class="slot trash" role="button" tabindex="0" aria-label="Trash can" title="Trash can">
+                    <span class="slot-emoji">🗑️</span>
+                </div>
+                <p class="trash-hint">Click a stack, then click the trash can (or drag it in). Right-click throws away just one. It always asks first.</p>
+            </div>
             <p id="inv-info" class="slot-info"></p>
             <!-- Shown when a chopping table is selected -->
             <button id="inv-edit-btn" class="small hidden">✏️ Edit chopping table</button>
@@ -254,6 +261,19 @@
         </div>
         <button class="quiet" data-goto="game-screen">Back to factory</button>
     </section>
+
+    <!-- Asks before something is thrown in the trash can -->
+    <div id="trash-popup" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="trash-title">
+        <div class="trash-box">
+            <div id="trash-emoji" class="trash-emoji" aria-hidden="true"></div>
+            <h2 id="trash-title">Throw this away?</h2>
+            <p id="trash-detail" class="trash-detail"></p>
+            <div class="weird-buttons">
+                <button id="trash-keep" class="quiet">Keep it</button>
+                <button id="trash-yes" class="danger">Throw away</button>
+            </div>
+        </div>
+    </div>
 
     <!-- The weirdness: shown when a whole factory is full of diamonds -->
     <div id="weird-popup" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="weird-title">

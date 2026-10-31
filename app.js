@@ -920,6 +920,8 @@ function updateInventory() {
         return; // nothing to refresh while the inventory is closed
     }
     paintGrid(invParts);
+    // The trash can lights up while a stack is picked up
+    document.getElementById('trash-slot').classList.toggle('ready', invSel !== null && invSel < INV_SLOTS);
     let stock = 0;
     for (let i = 0; i < INV_SLOTS; i++) {
         if (inventory[i]) {
@@ -954,6 +956,104 @@ document.getElementById('inv-edit-btn').addEventListener('click', function () {
     }
 });
 document.getElementById('table-back').addEventListener('click', leaveTable);
+
+// ---- The trash can: throwing something away always asks first
+let trashPending = null; // what we are asking about: { address, id, n }
+
+function askTrash(address, one) {
+    const stack = address !== null && address < INV_SLOTS ? inventory[address] : null;
+    if (!stack) {
+        return;
+    }
+    const def = ITEM_BY_ID[stack.id];
+    // A chopping table is always thrown away as a whole (it never stacks)
+    const n = one && stackMax(stack.id) !== 1 ? 1 : stack.n;
+    trashPending = { address: address, id: stack.id, n: n };
+
+    document.getElementById('trash-emoji').innerText = def.emoji;
+    document.getElementById('trash-title').innerText =
+        stack.table ? 'Throw away this chopping table?' : 'Throw away ' + format(n) + ' x ' + def.name + '?';
+    let text = 'It will be gone for good. You cannot get it back.';
+    if (stack.table) {
+        text = 'It has ' + format(countPieces(stack.table)) + ' pieces inside, and they go with it. ' + text;
+    } else if (n < stack.n) {
+        text = 'You keep the other ' + format(stack.n - n) + '. ' + text;
+    }
+    document.getElementById('trash-detail').innerText = text;
+    document.getElementById('trash-popup').classList.remove('hidden');
+    document.getElementById('trash-keep').focus(); // Enter keeps it: the safe choice
+}
+
+function closeTrash() {
+    trashPending = null;
+    document.getElementById('trash-popup').classList.add('hidden');
+}
+
+function confirmTrash() {
+    const ask = trashPending;
+    closeTrash();
+    if (!ask) {
+        return;
+    }
+    // Check again: it must still be the same stack, with enough in it
+    const stack = inventory[ask.address];
+    if (!stack || stack.id !== ask.id || stack.n < ask.n) {
+        return;
+    }
+    stack.n = stack.n - ask.n;
+    if (stack.n <= 0) {
+        inventory[ask.address] = null;
+    }
+    invSel = null;
+    unsaved = true;
+    displayDirty = true;
+    saveSoon();
+}
+
+const trashSlot = document.getElementById('trash-slot');
+trashSlot.addEventListener('click', function () {
+    askTrash(invSel, false);
+});
+trashSlot.addEventListener('contextmenu', function (event) {
+    event.preventDefault();
+    askTrash(invSel, true);
+});
+trashSlot.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        askTrash(invSel, false);
+    }
+});
+trashSlot.addEventListener('dragover', function (event) {
+    if (dragFrom !== null && dragFrom < INV_SLOTS) {
+        event.preventDefault();
+        trashSlot.classList.add('over');
+    }
+});
+trashSlot.addEventListener('dragleave', function () {
+    trashSlot.classList.remove('over');
+});
+trashSlot.addEventListener('drop', function (event) {
+    event.preventDefault();
+    trashSlot.classList.remove('over');
+    if (dragFrom !== null && dragFrom < INV_SLOTS) {
+        askTrash(dragFrom, false);
+    }
+});
+
+document.getElementById('trash-keep').addEventListener('click', closeTrash);
+document.getElementById('trash-yes').addEventListener('click', confirmTrash);
+document.getElementById('trash-popup').addEventListener('click', function (event) {
+    if (event.target === this) {
+        closeTrash(); // clicking outside the box means "keep it"
+    }
+});
+document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && trashPending) {
+        closeTrash();
+    }
+});
+
 buildShop();
 buildInventory();
 
@@ -1312,8 +1412,16 @@ function speedMultiplier(cell) {
 
 // special = true: a spectacular sushi from a chopping table (already complete, drawn with a lot of sparkle)
 function trySpawn(layer, sx, sy, dir, value, special) {
-    const tx = sx + DX[dir];
-    const ty = sy + DY[dir];
+    // A table's sushi flies over any chopping tables in its way and lands on the first piece after them
+    let steps = 1;
+    if (special) {
+        while (inGrid(sx + DX[dir] * steps, sy + DY[dir] * steps) &&
+               roleOf(cellAt(layer, sx + DX[dir] * steps, sy + DY[dir] * steps)) === 'table') {
+            steps++;
+        }
+    }
+    const tx = sx + DX[dir] * steps;
+    const ty = sy + DY[dir] * steps;
     if (!passable(layer, tx, ty) || layer.sushi.length >= MAX_SUSHI) {
         return false; // nowhere to put it
     }
@@ -1321,6 +1429,7 @@ function trySpawn(layer, sx, sy, dir, value, special) {
         x: sx, y: sy, tx: tx, ty: ty,
         dx: DX[dir], dy: DY[dir],
         p: 0, value: value, age: 0,
+        span: steps,                       // how many squares this hop is (more than 1 when it flies over tables)
         seen: [],                          // machines it already passed (each gives its bonus once)
         complete: !!special,               // false = a plain rice ball, true = sushi (it passed a fish)
         special: !!special,                // true = packed from a whole chopping table
@@ -1381,6 +1490,7 @@ function sell(layer, s, x, y, multiplier) {
 function arrive(layer, s) {
     s.x = s.tx;
     s.y = s.ty;
+    s.span = 1; // the next hop is one square again
     const cell = cellAt(layer, s.x, s.y);
 
     if (!cell || roleOf(cell) === 'source' || roleOf(cell) === 'table') {
@@ -1428,7 +1538,8 @@ function stepSushi(layer, s, dt) {
         }
     }
 
-    s.p = s.p + SPEED * dt * speedMultiplier(cellAt(layer, s.x, s.y)); // wasabi pieces are faster
+    // wasabi pieces are faster. A long hop over tables takes longer, so it is the same speed per square.
+    s.p = s.p + SPEED * dt * speedMultiplier(cellAt(layer, s.x, s.y)) / (s.span || 1);
     // "while" in case a lot of time passed (for example the tab was in the background)
     while (s.p >= 1 && !s.dead) {
         s.p = s.p - 1;

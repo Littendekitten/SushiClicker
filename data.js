@@ -59,7 +59,7 @@ export const TILES = [
     {
         id: 'chopping_table', name: 'Chopping table', emoji: '🔪', role: 'table', colour: '#5b4326', shop: false,
         stackMax: 1, editable: true,
-        hint: 'A factory inside your factory. Place it, then Edit it to build inside. What it sells is yours. It never stacks.'
+        hint: 'A factory inside your factory. Place it, press R to turn it, then Edit it to build inside. It works like a rice cooker: every second it sends out one spectacular sushi worth everything its inside sold. It never stacks.'
     },
 ];
 

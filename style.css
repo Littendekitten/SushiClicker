@@ -1059,3 +1059,72 @@ input[type="range"] {
 #trade-code-input {
     text-transform: uppercase;
 }
+
+/* ---------- Trash can (Inventory) ---------- */
+.trash-row {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    text-align: left;
+}
+
+.slot.trash {
+    flex: 0 0 4.5rem;
+    width: 4.5rem;
+    border-style: dashed;
+    border-color: rgba(255, 156, 156, 0.45);
+}
+
+/* Something is picked up: the can lights up to say "click me" */
+.slot.trash.ready,
+.slot.trash.over {
+    border-color: #ff9c9c;
+    background: rgba(255, 90, 90, 0.18);
+}
+
+.trash-hint {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: var(--rice-muted);
+}
+
+.trash-box {
+    width: min(100%, 26rem);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 1.6rem 1.5rem;
+    border-radius: 1.5rem;
+    background: #2a1815;
+    border: 2px solid #ff9c9c;
+}
+
+.trash-box h2 {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--rice);
+}
+
+.trash-emoji {
+    font-size: 2.6rem;
+    line-height: 1;
+}
+
+.trash-detail {
+    margin: 0;
+    line-height: 1.5;
+}
+
+button.danger {
+    background: #e5533d;
+    color: #fff;
+}
+
+@media (hover: hover) {
+    button.danger:hover {
+        background: #ef6a55;
+    }
+}

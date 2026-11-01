@@ -1776,12 +1776,6 @@ button.danger {
 
 
 /* ---------- The special chopping table slot (Inventory) ---------- */
-#table-slot-holder {
-    flex: 0 0 4.5rem;
-    width: 4.5rem;
-    display: flex;
-}
-
 .slot.table-slot {
     width: 100%;
     border-style: dashed;
@@ -1797,4 +1791,35 @@ button.danger {
 
 .slot.table-slot.selected {
     border-color: var(--salmon);
+}
+
+/* The special slot next to the hotbar in the factory */
+.hotbar-line {
+    display: flex;
+    align-items: flex-end;
+    gap: 1.25rem;
+}
+
+.hotbar-line #hotbar {
+    flex: 0 1 32rem;
+    min-width: 0;
+}
+
+.game-table-slot {
+    flex: 0 0 4rem;
+    width: 4rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.game-table-label {
+    font-size: 0.7rem;
+    color: #e3c083;
+    white-space: nowrap;
+}
+
+.game-table-slot.hidden {
+    display: none;
 }

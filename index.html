@@ -87,7 +87,16 @@
                 </div>
                 <!-- app.js fills the hotbar (the first 9 inventory slots) and the tool buttons -->
                 <div id="toolbar">
-                    <div id="hotbar"></div>
+                    <div class="hotbar-line">
+                        <div id="hotbar"></div>
+                        <!-- The special chopping table slot: only shown once you own a chopping table -->
+                        <div id="game-table-slot" class="game-table-slot hidden">
+                            <span id="game-table-label" class="game-table-label">Table slot</span>
+                            <button id="game-table-btn" class="slot table-slot" type="button">
+                                <span class="slot-emoji"></span><span class="slot-count"></span>
+                            </button>
+                        </div>
+                    </div>
                     <div id="tool-buttons"></div>
                 </div>
                 <p id="held-info" class="held-info"></p>
@@ -102,7 +111,7 @@
                     Chopping tables are little factories: place one, press R to turn it, then use ✏️ Edit on it to build inside.
                     Everything that sells inside is packed into one spectacular sushi that comes out of the table every second:
                     send it down belts to a serving counter. It flies over any other tables in its way.
-                    Own a chopping table? Put it in the special slot in the Inventory and it works by itself: its profit boosts everything your factory sells.
+                    Own a chopping table? Select it in the hotbar and click the table slot next to the hotbar: it works by itself, and its profit boosts everything your factory sells. Use Edit, Shift-click or right-click on the slot to build inside it.
                 </p>
                 <p id="factory-message" class="factory-message" aria-live="polite"></p>
             </div>
@@ -134,14 +143,6 @@
             <div id="inv-hotbar" class="slot-grid hotbar-row"></div>
             <p class="slot-label">Bag</p>
             <div id="inv-bag" class="slot-grid"></div>
-            <!-- Only shown once you own a chopping table -->
-            <div id="table-slot-row" class="hidden">
-                <p class="slot-label">Chopping table slot</p>
-                <div class="trash-row">
-                    <div id="table-slot-holder"></div>
-                    <p id="table-slot-info" class="trash-hint"></p>
-                </div>
-            </div>
             <p class="slot-label">Trash</p>
             <div class="trash-row">
                 <div id="trash-slot" class="slot trash" role="button" tabindex="0" aria-label="Trash can" title="Trash can">

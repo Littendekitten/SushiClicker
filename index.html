@@ -1,9 +1,12 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#08130f">
     <link rel="icon" type="image/png" href="SC.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <title>SushiClicker</title>
 
     <!-- Apply the saved screen size before the page draws, so it does not flash -->
@@ -19,6 +22,17 @@
     <script type="module" src="app.js"></script>
 </head>
 <body>
+
+    <!-- Atmosphere: lantern glows, a faint wave pattern and a vignette. Purely decorative. -->
+    <div id="ambient" aria-hidden="true">
+        <div class="waves"></div>
+        <div class="orb one"></div>
+        <div class="orb two"></div>
+        <div class="orb three"></div>
+        <div class="vignette"></div>
+    </div>
+    <!-- Click sparks and purchase sparkles are drawn here (fx.js) -->
+    <canvas id="fx-canvas" aria-hidden="true"></canvas>
 
     <section id="loading-screen" class="screen">
         <p>Loading...</p>
@@ -136,7 +150,7 @@
     <!-- Trading: two players swap items and points. One creates a trade and shares the code, the other joins. -->
     <section id="trade-screen" class="screen hidden">
         <div class="panel wide">
-            <h1>🤝 Trade</h1>
+            <h1><span class="emo">🤝</span> Trade</h1>
 
             <!-- No trade yet -->
             <div id="trade-lobby" class="trade-lobby">
@@ -195,7 +209,7 @@
     <!-- Leaderboard: the 10 players with the most points -->
     <section id="leaderboard-screen" class="screen hidden">
         <div class="panel">
-            <h1>🏆 Leaderboard</h1>
+            <h1><span class="emo">🏆</span> Leaderboard</h1>
             <p>The 10 players with the most points</p>
             <div id="board-list" class="item-list"></div>
             <p id="board-status"></p>
@@ -208,7 +222,7 @@
     <!-- Settings: username, game size, redeem codes -->
     <section id="settings-screen" class="screen hidden">
         <div class="panel">
-            <h1>⚙️ Settings</h1>
+            <h1><span class="emo">⚙️</span> Settings</h1>
 
             <div class="setting">
                 <label for="name-input">Username</label>
@@ -245,7 +259,7 @@
     <!-- The anvil: unlocked in the shop. Two slots: put items in and see what happens. -->
     <section id="anvil-screen" class="screen hidden">
         <div class="panel wide">
-            <h1>⚒️ Anvil</h1>
+            <h1><span class="emo">⚒️</span> Anvil</h1>
             <p>Put items in the two slots and see what happens...</p>
             <div class="anvil-row">
                 <div id="anvil-in" class="anvil-slots"></div>

@@ -68,7 +68,7 @@ export const TILES = [
     {
         id: 'chopping_table', name: 'Chopping table', emoji: '🔪', role: 'table', colour: '#5b4326', shop: false,
         stackMax: 1, editable: true,
-        hint: 'A factory inside your factory. Place it, press R to turn it, then Edit it to build inside. It works like a rice cooker: every second it sends out one spectacular sushi worth everything its inside sold. The sushi flies over other tables in its way. It never stacks.'
+        hint: 'A factory inside your factory. Place it, press R to turn it, then Edit it to build inside. It works like a rice cooker: every second it sends out one spectacular sushi worth everything its inside sold. The sushi flies over other tables in its way. It never stacks. Own one and the Inventory shows a special chopping table slot: a table put there works all by itself and boosts everything your factory sells.'
     },
 ];
 

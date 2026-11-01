@@ -1773,3 +1773,28 @@ button.danger {
         height: 2.4rem;
     }
 }
+
+
+/* ---------- The special chopping table slot (Inventory) ---------- */
+#table-slot-holder {
+    flex: 0 0 4.5rem;
+    width: 4.5rem;
+    display: flex;
+}
+
+.slot.table-slot {
+    width: 100%;
+    border-style: dashed;
+    border-color: #a8814a;
+}
+
+/* A table is working in the slot */
+.slot.table-slot.active {
+    border-style: solid;
+    border-color: #ffd34d;
+    box-shadow: 0 0 1rem rgba(255, 211, 77, 0.45), inset 0 0.18rem 0.5rem rgba(0, 0, 0, 0.5);
+}
+
+.slot.table-slot.selected {
+    border-color: var(--salmon);
+}

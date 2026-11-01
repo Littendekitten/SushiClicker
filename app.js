@@ -759,6 +759,7 @@ function updateDisplay() {
     editButton.classList.toggle('selected', editMode);
     updateTableBar();
     document.getElementById('rotate-arrow').innerText = ARROWS[rotation];
+    updateGameTableSlot();
 
     // What the selected thing does
     const held = inventory[hotbarSel];
@@ -1022,6 +1023,60 @@ function updateInventory() {
     // A chopping table can be edited right here
     document.getElementById('inv-edit-btn').classList.toggle('hidden', !(picked && picked.table));
 }
+
+// The same special slot next to the hotbar in the factory. Click it with a chopping table selected
+// in the hotbar to put it in; click it when it is filled to take the table back.
+const gameTableSlot = document.getElementById('game-table-slot');
+const gameTableBtn = document.getElementById('game-table-btn');
+const gameTableParts = {
+    button: gameTableBtn,
+    emoji: gameTableBtn.querySelector('.slot-emoji'),
+    count: gameTableBtn.querySelector('.slot-count')
+};
+let ownsTableCache = false;
+let ownsTableAt = -1000;
+
+function updateGameTableSlot() {
+    // Looking through every table is a bit of work, so only do it twice a second
+    const now = performance.now();
+    if (now - ownsTableAt > 500) {
+        ownsTableAt = now;
+        ownsTableCache = ownedCount(TABLE_ID) > 0;
+    }
+    const shown = ownsTableCache || !!tableSlot;
+    gameTableSlot.classList.toggle('hidden', !shown);
+    if (!shown) {
+        return;
+    }
+    paintSlot(gameTableParts, tableSlot);
+    gameTableBtn.classList.toggle('active', !!tableSlot);
+    gameTableBtn.title = tableSlot
+        ? 'Chopping table slot: profit ' + formatRate(tableProfitPerSecond()) + ' per second. Click to take the table back.'
+        : 'Chopping table slot: select a chopping table in your hotbar, then click here.';
+    document.getElementById('game-table-label').innerText =
+        tableSlot ? 'Boost x' + formatRate(tableBoost()) : 'Table slot';
+}
+
+gameTableBtn.addEventListener('click', function () {
+    if (tableSlot) {
+        if (!addToSlots(inventory, TABLE_ID, 1, tableSlot.table)) {
+            showMessage('Your inventory is full.');
+            return;
+        }
+        setSlotAt(TABLE_SLOT, null);
+    } else {
+        const held = inventory[hotbarSel];
+        if (!held || held.id !== TABLE_ID) {
+            showMessage('Select a chopping table in your hotbar, then click the table slot.');
+            return;
+        }
+        setSlotAt(TABLE_SLOT, held);
+        inventory[hotbarSel] = null;
+    }
+    unsaved = true;
+    displayDirty = true;
+    saveSoon();
+});
 
 // The special chopping table slot: only shown when you own at least one chopping table
 function updateTableSlot() {

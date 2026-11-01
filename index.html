@@ -102,6 +102,7 @@
                     Chopping tables are little factories: place one, press R to turn it, then use ✏️ Edit on it to build inside.
                     Everything that sells inside is packed into one spectacular sushi that comes out of the table every second:
                     send it down belts to a serving counter. It flies over any other tables in its way.
+                    Own a chopping table? Put it in the special slot in the Inventory and it works by itself: its profit boosts everything your factory sells.
                 </p>
                 <p id="factory-message" class="factory-message" aria-live="polite"></p>
             </div>
@@ -133,6 +134,14 @@
             <div id="inv-hotbar" class="slot-grid hotbar-row"></div>
             <p class="slot-label">Bag</p>
             <div id="inv-bag" class="slot-grid"></div>
+            <!-- Only shown once you own a chopping table -->
+            <div id="table-slot-row" class="hidden">
+                <p class="slot-label">Chopping table slot</p>
+                <div class="trash-row">
+                    <div id="table-slot-holder"></div>
+                    <p id="table-slot-info" class="trash-hint"></p>
+                </div>
+            </div>
             <p class="slot-label">Trash</p>
             <div class="trash-row">
                 <div id="trash-slot" class="slot trash" role="button" tabindex="0" aria-label="Trash can" title="Trash can">

@@ -53,6 +53,15 @@ export const TILES = [
     { id: 'bento',      name: 'Bento counter', emoji: '🍱', role: 'exit', colour: '#6a3526', shop: false, hint: 'Sells sushi for double its value', sell: 2 },
     { id: 'restaurant', name: 'Restaurant',    emoji: '🏯', role: 'exit', colour: '#7a3b2a', shop: false, hint: 'Sells sushi for 4x its value',      sell: 4 },
 
+    // ---- only from the Anvil: the next tier of everything (merge two of the last one in each chain)
+    { id: 'rocket_belt',  name: 'Rocket belt',   emoji: '🚀', role: 'belt',    colour: '#4a3f1a', shop: false, hint: 'A belt that moves sushi 4x faster', speed: 4 },
+    { id: 'rice_reactor', name: 'Rice reactor',  emoji: '⚛️', role: 'source',  colour: '#2a6c5a', shop: false, hint: 'Makes a rice ball every quarter second', speed: 8 },
+    { id: 'fugu',         name: 'Fugu',          emoji: '🐡', role: 'topping', colour: '#2070a0', shop: false, hint: 'Turns a rice ball into sushi: +600',  bonus: 600,  completes: true },
+    { id: 'oyster',       name: 'Oyster',        emoji: '🦪', role: 'topping', colour: '#2278aa', shop: false, hint: 'Turns a rice ball into sushi: +1500', bonus: 1500, completes: true },
+    { id: 'corn',         name: 'Sweet corn',    emoji: '🌽', role: 'topping', colour: '#52622c', shop: false, hint: 'Sushi passing by is worth +60', bonus: 60 },
+    { id: 'stardust',     name: 'Stardust',      emoji: '✨', role: 'topping', colour: '#4a4a78', shop: false, hint: 'Multiplies the value of sushi passing by by 5', mult: 5 },
+    { id: 'palace',       name: 'Sushi palace',  emoji: '🏰', role: 'exit',    colour: '#8a4230', shop: false, hint: 'Sells sushi for 8x its value', sell: 8 },
+
     // ---- only from the weirdness: fill a whole factory with diamonds
     // A factory inside your factory. Place it, then use the Edit tool on it (or Edit it in the Inventory)
     // to build inside it. You can even put chopping tables inside chopping tables, forever.
@@ -89,6 +98,21 @@ export const EQUIPS = [
         speed: 1.5, applies: ['belt', 'source', 'topping'],
         hint: 'Click a belt, rice cooker or topping to make it work 1.5x faster'
     },
+    {
+        id: 'green_tea', name: 'Green tea', emoji: '🍵', colour: '#7bc96f',
+        speed: 3, applies: ['belt', 'source', 'topping'],
+        hint: 'Click a belt, rice cooker or topping to make it work 3x faster'
+    },
+    {
+        id: 'sake', name: 'Sake', emoji: '🍾', colour: '#9fd8ff',
+        multiplier: 3, applies: ['source', 'topping', 'exit'],
+        hint: 'Click a rice cooker, topping or serving piece to make it earn 3x'
+    },
+    {
+        id: 'rainbow_sauce', name: 'Rainbow sauce', emoji: '🌈', colour: '#ff7ad9',
+        multiplier: 4, applies: ['source', 'topping', 'exit'],
+        hint: 'Click a rice cooker, topping or serving piece to make it earn 4x'
+    },
 ];
 
 // The Anvil recipes. Players are NOT shown these: they have to discover them.
@@ -97,15 +121,27 @@ export const RECIPES = [
     { out: 'spicy_drink', n: 1, needs: [{ id: 'exit', n: 1 }, { id: 'chef', n: 1 }] },
     { out: 'wasabi',      n: 1, needs: [{ id: 'soy_sauce', n: 1 }, { id: 'spicy_drink', n: 1 }] },
     { out: 'express_belt', n: 1, needs: [{ id: 'spicy_drink', n: 100 }, { id: 'belt', n: 100 }] },
+
+    // Two express belts make a rocket belt
+    { out: 'rocket_belt', n: 1, needs: [{ id: 'express_belt', n: 2 }] },
+
+    // Drinks and sauces
+    { out: 'green_tea',     n: 1, needs: [{ id: 'spicy_drink', n: 2 }, { id: 'cucumber', n: 1 }] },
+    { out: 'sake',          n: 1, needs: [{ id: 'soy_sauce', n: 2 }, { id: 'wasabi', n: 1 }] },
+    { out: 'rainbow_sauce', n: 1, needs: [{ id: 'sake', n: 1 }, { id: 'green_tea', n: 1 }] },
+
+    // Secret shortcuts: spend a rainbow sauce to jump straight to the top of a chain
+    { out: 'stardust', n: 1, needs: [{ id: 'diamond', n: 1 }, { id: 'rainbow_sauce', n: 1 }] },
+    { out: 'palace',   n: 1, needs: [{ id: 'restaurant', n: 1 }, { id: 'rainbow_sauce', n: 1 }] },
 ];
 
 // Merge chains: 2 of one piece make 1 of the next one in the list
 const MERGE_CHAINS = [
-    ['source', 'rice_press', 'rice_factory'],
-    ['fish', 'shrimp', 'crab', 'squid', 'octopus', 'lobster'],
-    ['cucumber', 'avocado', 'mushroom', 'tomato'],
-    ['salt', 'garlic', 'torch', 'diamond'],
-    ['exit', 'bento', 'restaurant'],
+    ['source', 'rice_press', 'rice_factory', 'rice_reactor'],
+    ['fish', 'shrimp', 'crab', 'squid', 'octopus', 'lobster', 'fugu', 'oyster'],
+    ['cucumber', 'avocado', 'mushroom', 'tomato', 'corn'],
+    ['salt', 'garlic', 'torch', 'diamond', 'stardust'],
+    ['exit', 'bento', 'restaurant', 'palace'],
 ];
 for (const chain of MERGE_CHAINS) {
     for (let i = 0; i + 1 < chain.length; i++) {

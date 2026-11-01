@@ -2,6 +2,7 @@ import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from
 import { doc, getDoc, getDocs, setDoc, writeBatch, collection, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import { TILES, EQUIPS, RECIPES, REMOVE_TOOL, EDIT_TOOL, TILE_BY_ID, ITEM_BY_ID } from "./data.js";
 import { auth, db } from "./firebase.js";
+import { burst, syncRanges } from "./fx.js";
 import { initTrade, getTradeId, isSaveBlocked, resetTrade, resumeTrade, onTradeScreenShown } from "./trade.js";
 
 // =====================================================================
@@ -16,7 +17,7 @@ const PRICE_GROWTH = 1.15; // each one you own makes the next 15% more expensive
 const COLS = 8;
 const ROWS = 6;
 const CELL = 56;           // size of one square, in canvas pixels
-const RES = 2;             // draw at 2x so it stays sharp on big or retina screens
+const RES = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 1))); // draw at 2x (3x on very sharp screens) so it stays crisp
 const CELLS = COLS * ROWS; // squares on one factory floor
 
 // Chopping tables: little factories inside a factory (they can hold more chopping tables, forever)
@@ -484,6 +485,7 @@ function showScreen(screenId) {
     document.getElementById(screenId).classList.remove('hidden');
     if (screenId === 'settings-screen') {
         fillSettings();
+        syncRanges();
     }
     if (screenId === 'leaderboard-screen') {
         loadLeaderboard(false);
@@ -1221,6 +1223,19 @@ function pointsButton(event) {
     unsaved = true;
     displayDirty = true;
     floatText(event, gained);
+    clickEffects(event);
+}
+
+// The sparks, rice grains and the little bump of the big number
+function clickEffects(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX || rect.left + rect.width / 2;
+    const y = event.clientY || rect.top + rect.height / 2;
+    burst(x, y, 1 + Math.min(1.1, Math.log10(clickPower()) * 0.25));
+    const score = document.getElementById('score');
+    score.classList.remove('bump');
+    void score.offsetWidth; // restart the animation
+    score.classList.add('bump');
 }
 
 function buyChopsticks() {
@@ -1246,12 +1261,13 @@ function floatText(event, amount) {
     bubble.className = 'float';
     bubble.innerText = '+' + formatRate(amount);
     bubble.style.left = x + 'px';
-    bubble.style.top = y + 'px';
+    bubble.style.top = (y - 10) + 'px';
+    bubble.style.setProperty('--drift', Math.round((Math.random() - 0.5) * 70) + 'px');
     document.body.appendChild(bubble);
 
     setTimeout(function () {
         bubble.remove();
-    }, 800);
+    }, 900);
 }
 
 // =====================================================================
@@ -1698,23 +1714,284 @@ function drawEmoji(emoji, cx, cy, size) {
     ctx.fillText(emoji, cx, cy + 2);
 }
 
-// Upgrades on a piece: a coloured glow and edge for each, and its little icon in the corner
-function drawMods(x, y, mods) {
+// ---- Small helpers for the renderer ----
+
+// Lighten (amt > 0) or darken (amt < 0) a #rrggbb colour. Cached, because it is called every frame.
+const shadeCache = {};
+function shade(hex, amt) {
+    const key = hex + '|' + amt;
+    if (shadeCache[key]) {
+        return shadeCache[key];
+    }
+    const n = parseInt(hex.slice(1), 16);
+    const target = amt < 0 ? 0 : 255;
+    const p = Math.abs(amt);
+    const r = Math.round((n >> 16) + (target - (n >> 16)) * p);
+    const g = Math.round(((n >> 8) & 255) + (target - ((n >> 8) & 255)) * p);
+    const b = Math.round((n & 255) + (target - (n & 255)) * p);
+    shadeCache[key] = 'rgb(' + r + ',' + g + ',' + b + ')';
+    return shadeCache[key];
+}
+
+function withAlpha(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+function easeOutBack(t) {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+// A deterministic random number generator, so the baked floor looks the same every time
+function seededRandom(seed) {
+    return function () {
+        seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Canvas shadows are measured in real canvas pixels, so they must be multiplied by RES
+function glow(colour, blur, offsetY) {
+    ctx.shadowColor = colour;
+    ctx.shadowBlur = blur * RES;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = (offsetY || 0) * RES;
+}
+
+function noGlow() {
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+}
+
+// An emoji with a soft drop shadow so it sits on the tile instead of being printed on it
+function emojiSoft(emoji, cx, cy, size) {
+    ctx.save();
+    glow('rgba(0, 0, 0, 0.6)', 4, 2);
+    drawEmoji(emoji, cx, cy, size);
+    ctx.restore();
+}
+
+// ---- The floor: painted once, then just stamped every frame ----
+// A dark lacquered board with a faint grid, speckle, lantern light from above and a vignette.
+const floorCache = {};
+function getFloor(wood) {
+    const key = wood ? 'wood' : 'lacquer';
+    if (floorCache[key]) {
+        return floorCache[key];
+    }
+    const W = COLS * CELL;
+    const H = ROWS * CELL;
+    const c = document.createElement('canvas');
+    c.width = W * RES;
+    c.height = H * RES;
+    const g = c.getContext('2d');
+    g.scale(RES, RES);
+    const rnd = seededRandom(wood ? 77 : 2024);
+
+    for (let gy = 0; gy < ROWS; gy++) {
+        for (let gx = 0; gx < COLS; gx++) {
+            const even = (gx + gy) % 2 === 0;
+            const base = wood ? (even ? '#2e2318' : '#35291c') : (even ? '#0b1812' : '#0e1e17');
+            g.fillStyle = base;
+            g.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+            const grad = g.createLinearGradient(0, gy * CELL, 0, (gy + 1) * CELL);
+            grad.addColorStop(0, 'rgba(255, 255, 255, 0.04)');
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0.16)');
+            g.fillStyle = grad;
+            g.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+        }
+    }
+
+    // Wood grain or lacquer speckle
+    if (wood) {
+        for (let i = 0; i < 90; i++) {
+            const y = rnd() * H;
+            const x = rnd() * W;
+            g.strokeStyle = 'rgba(0, 0, 0, ' + (0.08 + rnd() * 0.12) + ')';
+            g.lineWidth = 0.6 + rnd() * 0.8;
+            g.beginPath();
+            g.moveTo(x, y);
+            g.bezierCurveTo(x + 20, y + rnd() * 3 - 1.5, x + 50, y + rnd() * 3 - 1.5, x + 70 + rnd() * 60, y + rnd() * 2);
+            g.stroke();
+        }
+    } else {
+        for (let i = 0; i < 260; i++) {
+            g.fillStyle = rnd() < 0.5
+                ? 'rgba(255, 255, 255, ' + (0.02 + rnd() * 0.05) + ')'
+                : 'rgba(0, 0, 0, ' + (0.08 + rnd() * 0.12) + ')';
+            g.beginPath();
+            g.arc(rnd() * W, rnd() * H, 0.4 + rnd() * 0.7, 0, Math.PI * 2);
+            g.fill();
+        }
+    }
+
+    // Grid lines: a dark groove with a thin lit edge beside it
+    for (let gx = 1; gx < COLS; gx++) {
+        g.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        g.fillRect(gx * CELL - 0.5, 0, 1, H);
+        g.fillStyle = 'rgba(255, 255, 255, 0.05)';
+        g.fillRect(gx * CELL + 0.5, 0, 1, H);
+    }
+    for (let gy = 1; gy < ROWS; gy++) {
+        g.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        g.fillRect(0, gy * CELL - 0.5, W, 1);
+        g.fillStyle = 'rgba(255, 255, 255, 0.05)';
+        g.fillRect(0, gy * CELL + 0.5, W, 1);
+    }
+    // Tiny studs where the lines cross
+    g.fillStyle = wood ? 'rgba(255, 220, 160, 0.16)' : 'rgba(183, 224, 90, 0.16)';
+    for (let gy = 1; gy < ROWS; gy++) {
+        for (let gx = 1; gx < COLS; gx++) {
+            g.beginPath();
+            g.arc(gx * CELL, gy * CELL, 1.3, 0, Math.PI * 2);
+            g.fill();
+        }
+    }
+
+    // Lantern light from above
+    const light = g.createRadialGradient(W * 0.5, H * 0.25, 10, W * 0.5, H * 0.35, W * 0.75);
+    light.addColorStop(0, wood ? 'rgba(255, 200, 120, 0.16)' : 'rgba(255, 196, 107, 0.10)');
+    light.addColorStop(1, 'rgba(255, 196, 107, 0)');
+    g.fillStyle = light;
+    g.fillRect(0, 0, W, H);
+
+    // Vignette
+    const vig = g.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, W * 0.62);
+    vig.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vig.addColorStop(1, 'rgba(0, 0, 0, 0.5)');
+    g.fillStyle = vig;
+    g.fillRect(0, 0, W, H);
+
+    // Inner bevel around the whole board
+    g.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    g.lineWidth = 2;
+    g.strokeRect(1, 1, W - 2, H - 2);
+
+    floorCache[key] = c;
+    return c;
+}
+
+// Dust motes drifting in the lantern light (only a few, drawn additively)
+const MOTES = [];
+for (let i = 0; i < 16; i++) {
+    MOTES.push({
+        x: Math.random() * COLS * CELL, y: Math.random() * ROWS * CELL,
+        speed: 3 + Math.random() * 6, wobble: 4 + Math.random() * 8,
+        phase: Math.random() * 6.28, size: 0.8 + Math.random() * 1.4
+    });
+}
+
+function drawMotes(time) {
+    const W = COLS * CELL;
+    const H = ROWS * CELL;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const m of MOTES) {
+        const x = (m.x + time * m.speed) % W;
+        const y = (m.y + Math.sin(time * 0.6 + m.phase) * m.wobble + H) % H;
+        const a = 0.12 + 0.14 * (0.5 + 0.5 * Math.sin(time * 1.4 + m.phase));
+        ctx.fillStyle = 'rgba(255, 214, 150, ' + a + ')';
+        ctx.beginPath();
+        ctx.arc(x, y, m.size, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.restore();
+}
+
+// ---- Tiles ----
+
+// The base of every piece: a soft shadow, a lit-from-above body, a gloss and a crisp edge
+function tileBase(x, y, colour, r) {
+    const px = x + 2;
+    const py = y + 2;
+    const s = CELL - 4;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    roundedRect(px, py + 2.5, s, s, r);
+    ctx.fill();
+
+    const body = ctx.createLinearGradient(0, py, 0, py + s);
+    body.addColorStop(0, shade(colour, 0.15));
+    body.addColorStop(0.45, colour);
+    body.addColorStop(1, shade(colour, -0.32));
+    ctx.fillStyle = body;
+    roundedRect(px, py, s, s, r);
+    ctx.fill();
+
+    // Gloss on the top half
+    ctx.save();
+    roundedRect(px, py, s, s, r);
+    ctx.clip();
+    const gloss = ctx.createLinearGradient(0, py, 0, py + s * 0.55);
+    gloss.addColorStop(0, 'rgba(255, 255, 255, 0.15)');
+    gloss.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = gloss;
+    ctx.fillRect(px, py, s, s * 0.55);
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.20)';
+    ctx.lineWidth = 1;
+    roundedRect(px + 0.5, py + 0.5, s - 1, s - 1, r - 0.5);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+    roundedRect(px - 0.5, py - 0.5, s + 1, s + 1, r + 0.5);
+    ctx.stroke();
+}
+
+// Upgrades on a piece: a glowing edge in the upgrade's colour for each one, and its icon in a little badge
+function drawMods(x, y, mods, time) {
     if (!mods || mods.length === 0) {
         return;
     }
     for (let k = 0; k < mods.length; k++) {
         const def = ITEM_BY_ID[mods[k]];
-        ctx.fillStyle = def.colour;
-        ctx.globalAlpha = 0.22;
-        roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
+        const pulse = 0.5 + 0.5 * Math.sin(time * 3 + k * 1.7);
+        const inset = 2 + k * 3;
+        const size = CELL - 4 - k * 6;
+
+        ctx.fillStyle = withAlpha(def.colour, 0.14 + 0.06 * pulse);
+        roundedRect(x + inset, y + inset, size, size, 10);
         ctx.fill();
-        ctx.globalAlpha = 1;
+
+        ctx.save();
+        glow(def.colour, 5 + 6 * pulse, 0);
         ctx.strokeStyle = def.colour;
-        ctx.lineWidth = 2.5;
-        roundedRect(x + 2 + k * 3, y + 2 + k * 3, CELL - 4 - k * 6, CELL - 4 - k * 6, 10);
+        ctx.lineWidth = 2.2;
+        roundedRect(x + inset, y + inset, size, size, 10);
         ctx.stroke();
-        drawEmoji(def.emoji, x + CELL - 12 - k * 14, y + 12, 13);
+        ctx.restore();
+
+        // Golden things shimmer: a bright band sweeps across them
+        if (def.golden) {
+            ctx.save();
+            roundedRect(x + inset, y + inset, size, size, 10);
+            ctx.clip();
+            const sweep = ((time * 0.7) % 1.6) - 0.3;
+            const sx = x + sweep * (CELL + 20) - 10;
+            const band = ctx.createLinearGradient(sx - 14, y, sx + 14, y + CELL);
+            band.addColorStop(0, 'rgba(255, 240, 170, 0)');
+            band.addColorStop(0.5, 'rgba(255, 240, 170, 0.5)');
+            band.addColorStop(1, 'rgba(255, 240, 170, 0)');
+            ctx.fillStyle = band;
+            ctx.fillRect(x, y, CELL, CELL);
+            ctx.restore();
+        }
+
+        const bx = x + CELL - 12 - k * 15;
+        const by = y + 12;
+        ctx.fillStyle = 'rgba(8, 19, 15, 0.8)';
+        ctx.beginPath();
+        ctx.arc(bx, by, 8.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = def.colour;
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        drawEmoji(def.emoji, bx, by, 11);
     }
 }
 
@@ -1740,21 +2017,38 @@ function drawStar(cx, cy, r, colour, alpha) {
 // A chopping table: a wooden tile with a tiny picture of what is inside it.
 // Like a rice cooker it shows which way it sends sushi, and it flashes when it sends one.
 function drawTable(x, y, table, dir, time, pulse) {
-    ctx.fillStyle = TILE_BY_ID[TABLE_ID].colour;
+    tileBase(x, y, TILE_BY_ID[TABLE_ID].colour, 10);
+
+    // Wood grain
+    ctx.save();
     roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
-    ctx.fill();
-    ctx.strokeStyle = '#a07a45';
-    ctx.lineWidth = 2;
-    roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)';
+    ctx.lineWidth = 1;
+    for (let k = 1; k < 6; k++) {
+        ctx.beginPath();
+        ctx.moveTo(x, y + k * 9.5);
+        ctx.bezierCurveTo(x + 18, y + k * 9.5 - 2, x + 38, y + k * 9.5 + 2, x + CELL, y + k * 9.5);
+        ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle = '#b48a50';
+    ctx.lineWidth = 1.6;
+    roundedRect(x + 2.5, y + 2.5, CELL - 5, CELL - 5, 9.5);
     ctx.stroke();
 
     const pad = 9;
     const size = (CELL - pad * 2) / COLS;
     const top = y + (CELL - size * ROWS) / 2 - 1;
+
+    // A dark glass panel with the mini factory behind it
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    roundedRect(x + pad - 2, top - 2, size * COLS + 4, size * ROWS + 4, 3);
+    ctx.fill();
     for (let gy = 0; gy < ROWS; gy++) {
         for (let gx = 0; gx < COLS; gx++) {
             const inner = table ? table.grid[gy * COLS + gx] : null;
-            ctx.fillStyle = inner ? MINI_COLOUR[TILE_BY_ID[inner.kind].role] : 'rgba(0, 0, 0, 0.35)';
+            ctx.fillStyle = inner ? MINI_COLOUR[TILE_BY_ID[inner.kind].role] : 'rgba(255, 255, 255, 0.07)';
             ctx.fillRect(x + pad + gx * size + 0.5, top + gy * size + 0.5, size - 1, size - 1);
         }
     }
@@ -1764,16 +2058,20 @@ function drawTable(x, y, table, dir, time, pulse) {
     const since = pulse ? time - pulse : 99;
     if (since < 0.45) {
         const k = since / 0.45;
+        ctx.save();
+        glow('rgba(255, 220, 110, 0.9)', 8, 0);
         ctx.strokeStyle = 'rgba(255, 226, 120, ' + (1 - k) + ')';
         ctx.lineWidth = 3;
         roundedRect(x + 2 - k * 4, y + 2 - k * 4, CELL - 4 + k * 8, CELL - 4 + k * 8, 10 + k * 4);
         ctx.stroke();
+        ctx.restore();
     }
 
     // The arrow: which way the sushi comes out (golden, so it stands out on the wood)
     ctx.save();
     ctx.translate(x + CELL / 2, y + CELL / 2);
     ctx.rotate((dir || 0) * Math.PI / 2);
+    glow('rgba(255, 211, 77, 0.8)', 5, 0);
     ctx.fillStyle = '#ffd34d';
     ctx.strokeStyle = '#3b2a12';
     ctx.lineWidth = 2;
@@ -1788,8 +2086,9 @@ function drawTable(x, y, table, dir, time, pulse) {
     ctx.restore();
 }
 
-// Draws one piece in the square at (gx, gy). table: the inside of a chopping table (to draw it small)
-function drawPiece(kind, dir, gx, gy, time, mods, table, pulse) {
+// Draws one piece in the square at (gx, gy). table: the inside of a chopping table (to draw it small).
+// progress (0 to 1): how close a rice cooker or table is to making its next sushi.
+function drawPiece(kind, dir, gx, gy, time, mods, table, pulse, progress) {
     const x = gx * CELL;
     const y = gy * CELL;
     const cx = x + CELL / 2;
@@ -1800,57 +2099,132 @@ function drawPiece(kind, dir, gx, gy, time, mods, table, pulse) {
         drawTable(x, y, table, dir, time, pulse);
         return;
     }
-    if (def.role === 'belt') {
-        ctx.fillStyle = def.colour;
-        roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 8);
-        ctx.fill();
 
-        // Moving arrows that point the way the belt goes
+    if (def.role === 'belt') {
+        tileBase(x, y, def.colour, 8);
+        const fast = def.speed > 1;
+
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(dir * Math.PI / 2);
-        ctx.strokeStyle = 'rgba(246, 243, 234, 0.35)';
-        ctx.lineWidth = 3;
+
+        // Two side rails
+        for (const side of [-1, 1]) {
+            const ry = side * (CELL / 2 - 9);
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-CELL / 2 + 8, ry);
+            ctx.lineTo(CELL / 2 - 8, ry);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-CELL / 2 + 8, ry + 1.6);
+            ctx.lineTo(CELL / 2 - 8, ry + 1.6);
+            ctx.stroke();
+        }
+
+        // Moving chevrons that point the way the belt goes. They fade in and out at the ends.
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         const cellNow = { kind: kind, mods: mods || [] };
         const phase = (time * SPEED * speedMultiplier(cellNow)) % 1;
-        for (let k = 0; k < 2; k++) {
-            const px = (((phase + k * 0.5) % 1) - 0.5) * CELL * 0.8;
+        for (let k = 0; k < 3; k++) {
+            const t = (phase + k / 3) % 1;
+            const px = (t - 0.5) * CELL * 0.86;
+            const a = Math.sin(t * Math.PI);
+            ctx.save();
+            if (fast) {
+                glow('rgba(255, 226, 120, 0.9)', 5, 0);
+            }
+            ctx.strokeStyle = fast ? 'rgba(255, 226, 120, ' + (0.9 * a) + ')' : 'rgba(247, 243, 232, ' + (0.62 * a) + ')';
+            ctx.lineWidth = 3.2;
             ctx.beginPath();
             ctx.moveTo(px - 5, -8);
             ctx.lineTo(px + 3, 0);
             ctx.lineTo(px - 5, 8);
             ctx.stroke();
+            ctx.restore();
         }
         ctx.restore();
-        drawMods(x, y, mods);
+        drawMods(x, y, mods, time);
         return;
     }
 
     // Machines: a coloured tile with an emoji on it
-    ctx.fillStyle = def.colour;
-    roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
-    ctx.fill();
-    drawEmoji(TILE_BY_ID[kind].emoji, cx, cy, 28);
+    tileBase(x, y, def.colour, 10);
 
-    drawMods(x, y, mods);
+    // A coloured line along the bottom says what kind of machine it is
+    ctx.fillStyle = MINI_COLOUR[def.role];
+    ctx.globalAlpha = 0.75;
+    roundedRect(x + 15, y + CELL - 9, CELL - 30, 2.5, 1.25);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Serving counters glow like paper lanterns
+    if (def.role === 'exit') {
+        const lit = 0.18 + 0.12 * Math.sin(time * 2.4 + gx + gy);
+        const lamp = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.55);
+        lamp.addColorStop(0, 'rgba(255, 170, 90, ' + (lit + 0.12) + ')');
+        lamp.addColorStop(1, 'rgba(255, 140, 60, 0)');
+        ctx.fillStyle = lamp;
+        ctx.fillRect(x, y, CELL, CELL);
+    }
+
+    // A soft plate under the emoji
+    const plate = ctx.createRadialGradient(cx, cy - 3, 1, cx, cy, 19);
+    plate.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
+    plate.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = plate;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 19, 0, Math.PI * 2);
+    ctx.fill();
+
+    emojiSoft(def.emoji, cx, cy - 1, 28);
+
+    // The rice cooker's progress ring: it fills up, then a rice ball pops out
+    if (def.role === 'source' && progress !== undefined) {
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        if (progress > 0.01) {
+            glow('rgba(183, 224, 90, 0.8)', 4, 0);
+            ctx.strokeStyle = '#c6ea74';
+            ctx.beginPath();
+            ctx.arc(cx, cy, 22, -Math.PI / 2, -Math.PI / 2 + Math.min(1, progress) * Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    drawMods(x, y, mods, time);
 
     // The rice cooker also shows which way it sends sushi
     if (def.role === 'source') {
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(dir * Math.PI / 2);
-        ctx.fillStyle = '#ff7a4d';
+        glow('rgba(255, 122, 77, 0.9)', 5, 0);
+        ctx.fillStyle = '#ff8a5c';
+        ctx.strokeStyle = 'rgba(60, 20, 5, 0.7)';
+        ctx.lineWidth = 1.2;
         ctx.beginPath();
         ctx.moveTo(CELL * 0.3, -7);
-        ctx.lineTo(CELL * 0.45, 0);
+        ctx.lineTo(CELL * 0.46, 0);
         ctx.lineTo(CELL * 0.3, 7);
         ctx.closePath();
         ctx.fill();
+        ctx.stroke();
         ctx.restore();
     }
 }
+
+// ---- Sushi ----
 
 // The spectacular sushi a chopping table sends out: a glowing golden nigiri with spinning rays and sparkles
 // lite = true when there are very many of them on the floor: no rays or number, a flat glow, one sparkle
@@ -1858,54 +2232,78 @@ function drawSuperSushi(cx, cy, value, time, seed, lite) {
     const beat = 0.5 + 0.5 * Math.sin(time * 6 + seed);
     const r = CELL * (0.62 + 0.07 * beat);
 
-    // Warm glow
+    // Warm glow, added to the light underneath
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     if (lite) {
-        ctx.fillStyle = 'rgba(255, 200, 80, 0.35)';
+        ctx.fillStyle = 'rgba(255, 190, 70, 0.28)';
     } else {
-        const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
-        glow.addColorStop(0, 'rgba(255, 244, 180, 0.95)');
-        glow.addColorStop(0.5, 'rgba(255, 190, 60, 0.4)');
-        glow.addColorStop(1, 'rgba(255, 140, 40, 0)');
-        ctx.fillStyle = glow;
+        const halo = ctx.createRadialGradient(cx, cy, 2, cx, cy, r * 1.15);
+        halo.addColorStop(0, 'rgba(255, 244, 180, 0.85)');
+        halo.addColorStop(0.45, 'rgba(255, 180, 60, 0.38)');
+        halo.addColorStop(1, 'rgba(255, 130, 40, 0)');
+        ctx.fillStyle = halo;
     }
     ctx.beginPath();
-    ctx.arc(cx, cy, lite ? r * 0.8 : r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, lite ? r * 0.8 : r * 1.15, 0, Math.PI * 2);
     ctx.fill();
-
-    // Spinning rays
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(time * 1.3 + seed);
-    ctx.fillStyle = 'rgba(255, 228, 120, 0.4)';
-    for (let k = 0; k < (lite ? 0 : 8); k++) {
-        ctx.rotate(Math.PI / 4);
-        ctx.beginPath();
-        ctx.moveTo(-2.5, -r * 0.3);
-        ctx.lineTo(0, -r * 1.05);
-        ctx.lineTo(2.5, -r * 0.3);
-        ctx.closePath();
-        ctx.fill();
-    }
     ctx.restore();
+
+    // Spinning rays, tapered like light through a window
+    if (!lite) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.translate(cx, cy);
+        ctx.rotate(time * 1.3 + seed);
+        for (let k = 0; k < 8; k++) {
+            ctx.rotate(Math.PI / 4);
+            const ray = ctx.createLinearGradient(0, -r * 0.25, 0, -r * 1.15);
+            ray.addColorStop(0, 'rgba(255, 232, 140, 0.55)');
+            ray.addColorStop(1, 'rgba(255, 232, 140, 0)');
+            ctx.fillStyle = ray;
+            ctx.beginPath();
+            ctx.moveTo(-3.2, -r * 0.25);
+            ctx.lineTo(0, -r * 1.15);
+            ctx.lineTo(3.2, -r * 0.25);
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
+    }
 
     // The nigiri (bigger than a normal one): rice below, a shimmering topping on top
     const w = CELL * 0.72;
     const h = CELL * 0.4;
-    ctx.fillStyle = '#fffaf0';
+
+    // Ground shadow
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + h * 0.6 + 4, w * 0.5, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const rice = ctx.createLinearGradient(0, cy - h / 2, 0, cy + h / 2 + 4);
+    rice.addColorStop(0, '#fffdf6');
+    rice.addColorStop(1, '#e6dfc8');
+    ctx.fillStyle = rice;
     roundedRect(cx - w / 2, cy - h / 2 + 4, w, h * 0.75, 7);
     ctx.fill();
+
     const slide = (time * 0.8 + seed) % 1;
     const top = ctx.createLinearGradient(cx - w / 2, cy, cx + w / 2, cy);
     top.addColorStop(0, '#ff6a3d');
     top.addColorStop(Math.max(0.01, slide - 0.25), '#ff8a4d');
-    top.addColorStop(slide, '#ffe08a');
+    top.addColorStop(slide, '#fff0b0');
     top.addColorStop(Math.min(0.99, slide + 0.25), '#ff8a4d');
     top.addColorStop(1, '#ff5d6e');
+    ctx.save();
+    glow('rgba(255, 190, 60, 0.9)', lite ? 0 : 8, 0);
     ctx.fillStyle = top;
     roundedRect(cx - w / 2 - 2, cy - h / 2 - 5, w + 4, h * 0.65, 7);
     ctx.fill();
+    ctx.restore();
     ctx.strokeStyle = '#ffd34d';
     ctx.lineWidth = 2;
+    roundedRect(cx - w / 2 - 2, cy - h / 2 - 5, w + 4, h * 0.65, 7);
     ctx.stroke();
 
     // Sparkles circling it
@@ -1923,6 +2321,7 @@ function drawSuperSushi(cx, cy, value, time, seed, lite) {
     ctx.font = '700 15px Fredoka, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
     ctx.lineWidth = 4;
     ctx.strokeStyle = '#3b2a12';
     ctx.strokeText(text, cx, cy - h / 2 - 17);
@@ -1937,34 +2336,107 @@ function drawSushi(cx, cy, value, complete) {
     const h = CELL * 0.3;
 
     if (!complete) {
-        ctx.fillStyle = '#f6f3ea';
+        // Ground shadow
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
         ctx.beginPath();
-        ctx.arc(cx, cy + 2, CELL * 0.17, 0, Math.PI * 2);
+        ctx.ellipse(cx + 1, cy + 10, 10, 3.4, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+
+        // A round, slightly squat rice ball lit from the top left
+        const ball = ctx.createRadialGradient(cx - 4, cy - 4, 1, cx, cy + 1, CELL * 0.2);
+        ball.addColorStop(0, '#ffffff');
+        ball.addColorStop(0.6, '#efe9d6');
+        ball.addColorStop(1, '#bdb598');
+        ctx.fillStyle = ball;
         ctx.beginPath();
-        ctx.arc(cx + 2, cy + 5, CELL * 0.1, 0, Math.PI * 2);
+        ctx.ellipse(cx, cy + 1, CELL * 0.18, CELL * 0.16, 0, 0, Math.PI * 2);
         ctx.fill();
+        // A few grains
+        ctx.strokeStyle = 'rgba(150, 138, 105, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.lineCap = 'round';
+        for (const g of [[-4, 2, -3, 4], [2, 0, 4, 2], [-1, 5, 1, 6]]) {
+            ctx.beginPath();
+            ctx.moveTo(cx + g[0], cy + g[1]);
+            ctx.lineTo(cx + g[2], cy + g[3]);
+            ctx.stroke();
+        }
     } else {
-        ctx.fillStyle = '#f6f3ea';
+        // A rich sushi (worth a lot) gets a faint golden aura
+        if (value >= 20) {
+            const aura = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.5);
+            aura.addColorStop(0, 'rgba(255, 210, 100, ' + Math.min(0.4, 0.15 + value / 2000) + ')');
+            aura.addColorStop(1, 'rgba(255, 210, 100, 0)');
+            ctx.fillStyle = aura;
+            ctx.beginPath();
+            ctx.arc(cx, cy, CELL * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Ground shadow
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(cx + 1, cy + h / 2 + 5, w * 0.55, 3.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rice
+        const rice = ctx.createLinearGradient(0, cy - h / 2, 0, cy + h / 2 + 3);
+        rice.addColorStop(0, '#ffffff');
+        rice.addColorStop(1, '#dcd5bd');
+        ctx.fillStyle = rice;
         roundedRect(cx - w / 2, cy - h / 2 + 3, w, h * 0.7, 5);
         ctx.fill();
 
-        ctx.fillStyle = '#ff7a4d';
-        roundedRect(cx - w / 2 - 1, cy - h / 2 - 3, w + 2, h * 0.55, 5);
+        // Fish on top, with pale marbling and a shine
+        const fish = ctx.createLinearGradient(0, cy - h / 2 - 3, 0, cy - h / 2 + h * 0.52);
+        fish.addColorStop(0, '#ffa273');
+        fish.addColorStop(1, '#f2592b');
+        ctx.fillStyle = fish;
+        roundedRect(cx - w / 2 - 1.5, cy - h / 2 - 3, w + 3, h * 0.58, 5);
         ctx.fill();
+        ctx.save();
+        roundedRect(cx - w / 2 - 1.5, cy - h / 2 - 3, w + 3, h * 0.58, 5);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(255, 236, 220, 0.55)';
+        ctx.lineWidth = 1.2;
+        for (let k = -1; k <= 1; k++) {
+            ctx.beginPath();
+            ctx.moveTo(cx + k * 7 - 4, cy - h / 2 - 3);
+            ctx.lineTo(cx + k * 7 + 4, cy - h / 2 + h * 0.55);
+            ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(cx - 5, cy - h / 2 - 0.5, 7, 1.8, -0.1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
     if (value > 1) {
         ctx.font = '700 12px Fredoka, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#0f1f1a';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 3.2;
+        ctx.strokeStyle = '#0a1511';
         ctx.strokeText(formatRate(value), cx, cy - h / 2 - 11);
-        ctx.fillStyle = '#b7e05a';
+        ctx.fillStyle = '#c6ea74';
         ctx.fillText(formatRate(value), cx, cy - h / 2 - 11);
     }
+}
+
+// ---- Pieces popping into place ----
+// A piece you just placed pops in with a little overshoot and a ring. When a whole floor
+// shows up at once (loading, or going into a table) the pieces pop in as a quick diagonal wave.
+const firstSeen = new WeakMap();
+
+function popAge(cell, index, time, staggerNew) {
+    let t0 = firstSeen.get(cell);
+    if (t0 === undefined) {
+        t0 = time + (staggerNew ? ((index % COLS) + Math.floor(index / COLS)) * 0.035 : 0);
+        firstSeen.set(cell, t0);
+    }
+    return time - t0;
 }
 
 function draw() {
@@ -1986,19 +2458,57 @@ function draw() {
     ctx.setTransform(RES, 0, 0, RES, 0, 0);
     ctx.clearRect(0, 0, COLS * CELL, ROWS * CELL);
 
-    // Floor: a faint checkerboard
-    for (let gy = 0; gy < ROWS; gy++) {
-        for (let gx = 0; gx < COLS; gx++) {
-            ctx.fillStyle = (gx + gy) % 2 === 0 ? '#0b1713' : '#0e1c17';
-            ctx.fillRect(gx * CELL, gy * CELL, CELL, CELL);
+    // Floor (inside a chopping table it is wood)
+    ctx.drawImage(getFloor(viewPath.length > 0), 0, 0, COLS * CELL, ROWS * CELL);
+    drawMotes(time);
+
+    // How many pieces are new this frame? If it is a lot, they pop in as a wave.
+    let fresh = 0;
+    for (let i = 0; i < layer.grid.length; i++) {
+        if (layer.grid[i] && !firstSeen.has(layer.grid[i])) {
+            fresh++;
         }
     }
 
     // Pieces
     for (let i = 0; i < layer.grid.length; i++) {
         const cell = layer.grid[i];
-        if (cell) {
-            drawPiece(cell.kind, cell.dir, i % COLS, Math.floor(i / COLS), time, cell.mods, cell.table, layer.pulses[i]);
+        if (!cell) {
+            continue;
+        }
+        const gx = i % COLS;
+        const gy = Math.floor(i / COLS);
+        let progress;
+        if (layer.timers[i] !== undefined) {
+            const role = roleOf(cell);
+            if (role === 'source') {
+                progress = layer.timers[i] / SPAWN_EVERY;
+            } else if (role === 'table') {
+                progress = layer.timers[i] / TABLE_EVERY;
+            }
+        }
+        const age = popAge(cell, i, time, fresh > 3);
+        if (age < 0) {
+            continue; // waiting for its turn in the wave
+        }
+        if (age < 0.4) {
+            const k = age / 0.4;
+            const scale = Math.max(0.01, easeOutBack(Math.min(1, age / 0.32)));
+            const px = gx * CELL + CELL / 2;
+            const py = gy * CELL + CELL / 2;
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.scale(scale, scale);
+            ctx.translate(-px, -py);
+            drawPiece(cell.kind, cell.dir, gx, gy, time, cell.mods, cell.table, layer.pulses[i], progress);
+            ctx.restore();
+            // A ring of light spreads out from the new piece
+            ctx.strokeStyle = 'rgba(255, 214, 140, ' + (0.6 * (1 - k)) + ')';
+            ctx.lineWidth = 2.5 * (1 - k) + 0.5;
+            roundedRect(gx * CELL + 2 - k * 7, gy * CELL + 2 - k * 7, CELL - 4 + k * 14, CELL - 4 + k * 14, 10 + k * 6);
+            ctx.stroke();
+        } else {
+            drawPiece(cell.kind, cell.dir, gx, gy, time, cell.mods, cell.table, layer.pulses[i], progress);
         }
     }
 
@@ -2023,36 +2533,66 @@ function draw() {
     // "+5" popups
     for (const effect of layer.effects) {
         const life = effect.life || 0.9;
-        const rise = effect.age * 40;
-        const fade = 1 - effect.age / life;
+        const t = effect.age / life;
+        const rise = (1 - Math.pow(1 - Math.min(1, effect.age / 0.9), 2)) * 38;
+        const fade = Math.max(0, 1 - t * t);
+        const bx = (effect.x + 0.5) * CELL;
+        const by = (effect.y + 0.5) * CELL;
+
         if (effect.big) {
-            // A spectacular sushi was sold: a ring, a burst of stars and big golden text
-            const bx = (effect.x + 0.5) * CELL;
-            const by = (effect.y + 0.5) * CELL;
-            ctx.strokeStyle = 'rgba(255, 226, 120, ' + (fade * 0.8) + ')';
-            ctx.lineWidth = 4;
+            // A spectacular sushi was sold: a flash, two rings, a burst of stars and big golden text
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            const flash = ctx.createRadialGradient(bx, by, 2, bx, by, 26 + effect.age * 90);
+            flash.addColorStop(0, 'rgba(255, 236, 160, ' + (fade * 0.6) + ')');
+            flash.addColorStop(1, 'rgba(255, 190, 60, 0)');
+            ctx.fillStyle = flash;
             ctx.beginPath();
-            ctx.arc(bx, by, 8 + effect.age * 70, 0, Math.PI * 2);
-            ctx.stroke();
-            for (let k = 0; k < 10; k++) {
-                const a = effect.seed + k * Math.PI / 5;
-                const d = 10 + effect.age * (50 + (k % 3) * 25);
+            ctx.arc(bx, by, 26 + effect.age * 90, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            for (let ring = 0; ring < 2; ring++) {
+                ctx.strokeStyle = 'rgba(255, 226, 120, ' + (fade * (0.8 - ring * 0.3)) + ')';
+                ctx.lineWidth = 4 - ring * 1.5;
+                ctx.beginPath();
+                ctx.arc(bx, by, 8 + effect.age * (70 + ring * 45), 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            for (let k = 0; k < 12; k++) {
+                const a = effect.seed + k * Math.PI / 6;
+                const d = 10 + effect.age * (50 + (k % 3) * 28);
                 drawStar(bx + Math.cos(a) * d, by + Math.sin(a) * d, 6 - effect.age * 2, k % 2 === 0 ? '#ffe27a' : '#fff6c2', fade);
             }
+        } else if (effect.age < 0.45) {
+            // A small pop of sparks around a normal sale
+            const e = effect.age / 0.45;
+            ctx.fillStyle = 'rgba(198, 234, 116, ' + (0.9 * (1 - e)) + ')';
+            for (let k = 0; k < 6; k++) {
+                const a = effect.seed + k * Math.PI / 3;
+                const d = 8 + e * 16;
+                ctx.beginPath();
+                ctx.arc(bx + Math.cos(a) * d, by + Math.sin(a) * d, 2 * (1 - e) + 0.4, 0, Math.PI * 2);
+                ctx.fill();
+            }
         }
+
+        const pop = 1 + 0.4 * Math.max(0, 1 - effect.age * 7);
+        ctx.save();
         ctx.globalAlpha = fade;
-        ctx.font = (effect.big ? '700 26px' : '700 18px') + ' Fredoka, system-ui, sans-serif';
+        ctx.font = (effect.big ? '700 ' + 26 * pop + 'px' : '700 ' + 18 * pop + 'px') + ' Fredoka, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
         ctx.lineWidth = effect.big ? 6 : 4;
-        ctx.strokeStyle = effect.big ? '#3b2a12' : '#0f1f1a';
-        ctx.strokeText(effect.text, (effect.x + 0.5) * CELL, effect.y * CELL - rise + 8);
-        ctx.fillStyle = effect.big ? '#ffe27a' : '#b7e05a';
-        ctx.fillText(effect.text, (effect.x + 0.5) * CELL, effect.y * CELL - rise + 8);
-        ctx.globalAlpha = 1;
+        ctx.strokeStyle = effect.big ? '#3b2a12' : '#0a1511';
+        ctx.strokeText(effect.text, bx, effect.y * CELL - rise + 8);
+        glow(effect.big ? 'rgba(255, 210, 80, 0.9)' : 'rgba(183, 224, 90, 0.7)', effect.big ? 10 : 6, 0);
+        ctx.fillStyle = effect.big ? '#ffe27a' : '#c6ea74';
+        ctx.fillText(effect.text, bx, effect.y * CELL - rise + 8);
+        ctx.restore();
     }
 
-    // The square under the mouse: outline + a see-through preview of the piece
+    // The square under the mouse: a glowing marching outline + a see-through preview of the piece
     if (hover) {
         const cell = cellAt(layer, hover.x, hover.y);
         const stack = inventory[hotbarSel];
@@ -2081,10 +2621,20 @@ function draw() {
         } else if (cell.kind !== def.id) {
             colour = '#ff9c9c';
         }
+        ctx.save();
+        ctx.globalAlpha = 0.10;
+        ctx.fillStyle = colour;
+        roundedRect(hover.x * CELL + 2, hover.y * CELL + 2, CELL - 4, CELL - 4, 8);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        glow(colour, 8, 0);
+        ctx.setLineDash([6, 4]);
+        ctx.lineDashOffset = -time * 14;
         ctx.strokeStyle = colour;
         ctx.lineWidth = 2;
         roundedRect(hover.x * CELL + 2, hover.y * CELL + 2, CELL - 4, CELL - 4, 8);
         ctx.stroke();
+        ctx.restore();
     }
 }
 requestAnimationFrame(draw);
@@ -2881,7 +3431,7 @@ async function loadLeaderboard(quiet) {
             rank = rank + 1;
             const data = entry.data();
             const row = document.createElement('div');
-            row.className = 'item board-row' + (currentUser && entry.id === currentUser.uid ? ' me' : '');
+            row.className = 'item board-row' + (rank <= 3 ? ' top' + rank : '') + (currentUser && entry.id === currentUser.uid ? ' me' : '');
             const place = document.createElement('span');
             place.className = 'board-rank';
             place.innerText = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '#' + rank;

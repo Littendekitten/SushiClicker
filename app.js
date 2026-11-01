@@ -44,12 +44,10 @@ const INV_SLOTS = 36;      // 4 rows of 9
 const HOTBAR = 9;
 const MAX_STACK = 999;     // most items in one slot
 
-// The special chopping table slot (on the Inventory screen, it appears once you own a chopping table).
+// The special chopping table slot (next to the hotbar in the factory, it appears once you own a chopping table).
 // A table that sits in it works by itself, no placing needed: whatever its inside sells over the last
 // PROFIT_WINDOW seconds is its profit per second. Profit / TABLE_PROFIT_DIVIDE multiplies everything your
 // normal factory sells (never less than x1, so the slot can only help you).
-// Slot addresses: 0-35 inventory, 36-37 Anvil, 38 this slot.
-const TABLE_SLOT = INV_SLOTS + 2;
 const TABLE_PROFIT_DIVIDE = 100;
 const PROFIT_WINDOW = 10;  // seconds
 
@@ -76,7 +74,7 @@ let editMode = false;    // true while the Edit tool is selected
 let inventory = [];      // INV_SLOTS slots, each null or { id, n }. Slots 0-8 are the hotbar.
                          // A chopping table slot also has table: its inside (a "layer", see newLayer)
 let anvil = false;       // true once you unlocked the anvil
-let tableSlot = null;    // the special chopping table slot: null or { id, n: 1, table } (see TABLE_SLOT)
+let tableSlot = null;    // the special chopping table slot: null or { id, n: 1, table } (see putInTableSlot)
 let tableLog = [];       // what the table in that slot sold lately: { t, v }, used for its profit per second
 let buyAmount = 1;       // the shop buys this many at a time
 let salesLog = [];       // recent sales, used to show "per second"
@@ -366,19 +364,13 @@ function useFromSlot(i) {
     }
 }
 
-// Slot addresses: 0-35 are inventory slots, 36 and 37 are the two Anvil input slots, 38 is the table slot.
+// Slot addresses: 0-35 are inventory slots, 36 and 37 are the two Anvil input slots.
 function getSlotAt(address) {
-    if (address === TABLE_SLOT) {
-        return tableSlot;
-    }
     return address < INV_SLOTS ? inventory[address] : anvilIn[address - INV_SLOTS];
 }
 
 function setSlotAt(address, value) {
-    if (address === TABLE_SLOT) {
-        tableSlot = value;
-        tableLog = []; // a different table starts counting its profit from zero
-    } else if (address < INV_SLOTS) {
+    if (address < INV_SLOTS) {
         inventory[address] = value;
     } else {
         anvilIn[address - INV_SLOTS] = value;
@@ -394,11 +386,6 @@ function moveSlot(from, to, one) {
     }
     const a = getSlotAt(from);
     const b = getSlotAt(to);
-    // The special slot only takes chopping tables (and only a chopping table can swap out of it)
-    if ((to === TABLE_SLOT && a.id !== TABLE_ID) || (from === TABLE_SLOT && b && b.id !== TABLE_ID)) {
-        tableSlotNote('Only a chopping table fits in this slot.');
-        return;
-    }
     const single = stackMax(a.id) === 1; // a chopping table: always moves as a whole, never merges
 
     if (one && !single) {
@@ -484,6 +471,11 @@ function pointsPerSecond() {
 
 // ---- The special chopping table slot
 // The floor inside the table that sits in the special slot (null if the slot is empty)
+function putInTableSlot(value) {
+    tableSlot = value;
+    tableLog = []; // a different table starts counting its profit from zero
+}
+
 function slotLayer() {
     return tableSlot && tableSlot.table ? tableSlot.table : null;
 }
@@ -506,19 +498,6 @@ function tableBoost() {
         return 1;
     }
     return Math.max(1, tableProfitPerSecond() / TABLE_PROFIT_DIVIDE);
-}
-
-// A short note next to the special slot ("Only a chopping table fits...")
-let tableNote = '';
-let tableNoteTimer = null;
-function tableSlotNote(text) {
-    tableNote = text;
-    displayDirty = true;
-    clearTimeout(tableNoteTimer);
-    tableNoteTimer = setTimeout(function () {
-        tableNote = '';
-        displayDirty = true;
-    }, 3000);
 }
 
 // =====================================================================
@@ -881,7 +860,6 @@ function buyAnvil() {
 // different item = swap. Right-click moves just one. You can also drag.
 const invParts = [];       // the inventory screen: one { button, emoji, count } per slot
 const anvInvParts = [];    // the same 36 slots, shown on the Anvil screen
-let tableSlotParts = null; // the special chopping table slot on the inventory screen
 const anvilInParts = [];   // the two Anvil input slots
 let anvilOutPart = null;   // the Anvil output slot
 let dragFrom = null;
@@ -974,9 +952,6 @@ function buildSlotGrid(hotbarBox, bagBox, parts) {
 
 function buildInventory() {
     buildSlotGrid(document.getElementById('inv-hotbar'), document.getElementById('inv-bag'), invParts);
-    tableSlotParts = makeSlot(TABLE_SLOT);
-    tableSlotParts.button.classList.add('table-slot');
-    document.getElementById('table-slot-holder').appendChild(tableSlotParts.button);
 }
 
 function paintGrid(parts) {
@@ -994,7 +969,6 @@ function updateInventory() {
         return; // nothing to refresh while the inventory is closed
     }
     paintGrid(invParts);
-    updateTableSlot();
     // The trash can lights up while a stack is picked up
     document.getElementById('trash-slot').classList.toggle('ready', invSel !== null && invSel < INV_SLOTS);
     let stock = 0;
@@ -1010,7 +984,7 @@ function updateInventory() {
 
     let text = 'Click a stack, then click another slot to move, merge or swap. ' +
         'Right-click moves one item. You can drag too. The top row is your hotbar.';
-    const picked = invSel !== null && (invSel < INV_SLOTS || invSel === TABLE_SLOT) ? getSlotAt(invSel) : null;
+    const picked = invSel !== null && invSel < INV_SLOTS ? inventory[invSel] : null;
     if (invSel !== null) {
         const stack = getSlotAt(invSel);
         const def = ITEM_BY_ID[stack.id];
@@ -1051,26 +1025,39 @@ function updateGameTableSlot() {
     paintSlot(gameTableParts, tableSlot);
     gameTableBtn.classList.toggle('active', !!tableSlot);
     gameTableBtn.title = tableSlot
-        ? 'Chopping table slot: profit ' + formatRate(tableProfitPerSecond()) + ' per second. Click to take the table back.'
+        ? 'Chopping table slot: profit ' + formatRate(tableProfitPerSecond()) + ' per second. Click to take the table back. Edit tool, Shift-click or right-click goes inside it.'
         : 'Chopping table slot: select a chopping table in your hotbar, then click here.';
     document.getElementById('game-table-label').innerText =
         tableSlot ? 'Boost x' + formatRate(tableBoost()) : 'Table slot';
 }
 
-gameTableBtn.addEventListener('click', function () {
+function openSlotTable(event) {
+    event.preventDefault();
+    if (tableSlot && tableSlot.table) {
+        enterTable(tableSlot.table);
+    }
+}
+gameTableBtn.addEventListener('contextmenu', openSlotTable);
+
+gameTableBtn.addEventListener('click', function (event) {
+    // Edit tool (or Shift-click): go inside the table in the slot
+    if (tableSlot && (editMode || event.shiftKey)) {
+        openSlotTable(event);
+        return;
+    }
     if (tableSlot) {
         if (!addToSlots(inventory, TABLE_ID, 1, tableSlot.table)) {
             showMessage('Your inventory is full.');
             return;
         }
-        setSlotAt(TABLE_SLOT, null);
+        putInTableSlot(null);
     } else {
         const held = inventory[hotbarSel];
         if (!held || held.id !== TABLE_ID) {
             showMessage('Select a chopping table in your hotbar, then click the table slot.');
             return;
         }
-        setSlotAt(TABLE_SLOT, held);
+        putInTableSlot(held);
         inventory[hotbarSel] = null;
     }
     unsaved = true;
@@ -1078,29 +1065,8 @@ gameTableBtn.addEventListener('click', function () {
     saveSoon();
 });
 
-// The special chopping table slot: only shown when you own at least one chopping table
-function updateTableSlot() {
-    const owns = ownedCount(TABLE_ID) > 0 || !!tableSlot;
-    document.getElementById('table-slot-row').classList.toggle('hidden', !owns);
-    if (!owns) {
-        return;
-    }
-    paintSlot(tableSlotParts, tableSlot);
-    tableSlotParts.button.classList.toggle('selected', invSel === TABLE_SLOT);
-    tableSlotParts.button.classList.toggle('active', !!tableSlot);
-    let text = 'Put a chopping table here and it works all by itself. It cannot sell its sushi, but what its inside ' +
-        'sells per second, divided by ' + TABLE_PROFIT_DIVIDE + ', multiplies everything your factory sells. ' +
-        'Tables inside it still need a serving counter.';
-    if (tableSlot) {
-        text = 'Profit: ' + formatRate(tableProfitPerSecond()) + ' per second. Your factory sells for x' +
-            formatRate(tableBoost()) + ' (profit / ' + TABLE_PROFIT_DIVIDE + ', never below x1). ' +
-            'Pick it up and press Edit to build inside it.';
-    }
-    document.getElementById('table-slot-info').innerText = tableNote || text;
-}
-
 document.getElementById('inv-edit-btn').addEventListener('click', function () {
-    const stack = invSel !== null && (invSel < INV_SLOTS || invSel === TABLE_SLOT) ? getSlotAt(invSel) : null;
+    const stack = invSel !== null && invSel < INV_SLOTS ? inventory[invSel] : null;
     if (stack && stack.table) {
         openTableFromInventory(stack.table);
     }

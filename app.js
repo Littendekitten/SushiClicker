@@ -204,14 +204,21 @@ resetGame();
 // =====================================================================
 // Big numbers get a letter: 1,474,879 -> "1.47M". Below one million we
 // show the whole number with commas, like before.
-const SUFFIXES = ['M', 'B', 'T', 'Qa', 'Qi', 'Sx', 'Sp', 'Oc', 'No', 'Dc'];
+const SUFFIXES = ['M', 'B', 'T', 'Qa', 'Qi', 'Sx', 'Sp', 'Oc', 'No', 'Dc',
+                  'Ud', 'Dd', 'Td', 'Qad', 'Qid', 'Sxd', 'Spd', 'Ocd', 'Nod', 'Vg'];
 
 // Returns the shortened text, or null when the number is too small to shorten
 function abbreviate(number) {
     if (!(number >= 1000000)) return null;
     // How many groups of 3 digits are there above the first million?
     let group = Math.floor(Math.log10(number) / 3) - 2;      // 0 = M, 1 = B, ...
-    if (group >= SUFFIXES.length) group = SUFFIXES.length - 1;
+    if (group >= SUFFIXES.length) {
+        // Bigger than the last letter: 1.23e66 (so the number never gets longer than the screen)
+        if (!isFinite(number)) return '∞';
+        const exponent = Math.floor(Math.log10(number));
+        const mantissa = Math.floor(number / Math.pow(10, exponent) * 100) / 100;
+        return String(mantissa) + 'e' + exponent;
+    }
     let scaled = number / Math.pow(1000, group + 2);
     // Cut off (don't round) to 2 decimals, so 999,999,999 never shows as "1000M"
     scaled = Math.floor(scaled * 100) / 100;
@@ -242,8 +249,12 @@ function formatRate(number) {
     return rounded.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
+// Every click is worth your chopsticks PLUS a share of what your factory makes per second:
+// the bigger your factory, the more a click gives. (0.1 = one click is worth 10% of a second of factory income.)
+const CLICK_FACTORY_SHARE = 0.1;
+
 function clickPower() {
-    return 1 + chopsticks;
+    return 1 + chopsticks + pointsPerSecond() * CLICK_FACTORY_SHARE;
 }
 
 function chopsticksCost() {
@@ -718,6 +729,11 @@ function showMessage(text) {
 // =====================================================================
 function updateDisplay() {
     document.getElementById('score').innerText = format(points);
+    // A long number gets a smaller font, so it always fits next to the factory
+    const scoreLength = document.getElementById('score').innerText.length;
+    document.getElementById('score').style.fontSize = scoreLength > 7
+        ? 'calc(clamp(3.5rem, 16vw, 5rem) * ' + Math.max(0.4, 7 / scoreLength).toFixed(3) + ')'
+        : '';
     document.getElementById('score').title = formatFull(points); // hover to see the exact number
     document.getElementById('per-second').innerText =
         formatRate(pointsPerSecond()) + ' per second, ' + formatRate(clickPower()) + ' per click' +
@@ -1484,6 +1500,12 @@ function clickSquare(x, y) {
         return;
     }
     const isTable = def.role === 'table';
+    // A chopping table does not go on the main factory: it belongs in the special slot next to the hotbar.
+    // (It can still go inside another chopping table.)
+    if (isTable && layer === rootLayer) {
+        showMessage('Put the chopping table in the special table slot next to the hotbar. It can only be placed inside another table.');
+        return;
+    }
     // A chopping table can go inside another one, but never inside itself (or inside something it holds)
     if (isTable && layerContains(stack.table, layer)) {
         showMessage("A chopping table can't go inside itself.");

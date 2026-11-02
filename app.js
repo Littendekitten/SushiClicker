@@ -1,6 +1,6 @@
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import { doc, getDoc, getDocs, setDoc, writeBatch, collection, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
-import { TILES, EQUIPS, RECIPES, REMOVE_TOOL, EDIT_TOOL, TILE_BY_ID, ITEM_BY_ID } from "./data.js";
+import { TILES, EQUIPS, RECIPES, CRATES, REMOVE_TOOL, EDIT_TOOL, TILE_BY_ID, ITEM_BY_ID } from "./data.js";
 import { auth, db } from "./firebase.js";
 import { burst, syncRanges } from "./fx.js";
 import { initTrade, getTradeId, isSaveBlocked, resetTrade, resumeTrade, onTradeScreenShown } from "./trade.js";
@@ -773,6 +773,7 @@ function updateDisplay() {
 
     document.getElementById('anvil-btn').classList.toggle('hidden', !anvil);
     updateShop();
+    updateCrates();
     updateInventory();
     updateAnvil();
 }
@@ -869,6 +870,138 @@ function buyAnvil() {
     unsaved = true;
     displayDirty = true;
     saveSoon();
+}
+
+// =====================================================================
+//  CRATES: pay points, get a random item (the crates are listed in data.js)
+// =====================================================================
+const crateRows = {}; // crate id -> { one, ten }
+const CRATE_AMOUNTS = [1, 10];
+
+function dropName(drop) {
+    const def = ITEM_BY_ID[drop.id];
+    return def.emoji + ' ' + def.name;
+}
+
+function buildCrates() {
+    for (const crate of CRATES) {
+        const row = document.createElement('div');
+        row.className = 'item crate';
+        const odds = crate.drops.map(function (drop) {
+            return '<span class="crate-odd' + (ITEM_BY_ID[drop.id].golden ? ' golden' : '') + '">' +
+                drop.chance + '% ' + dropName(drop) + '</span>';
+        }).join('');
+        row.innerHTML =
+            '<span class="item-emoji">' + crate.emoji + '</span>' +
+            '<span class="item-info"><span class="item-name">' + crate.name + '</span>' +
+            '<span class="crate-odds">' + odds + '</span></span>';
+        const buttons = document.createElement('span');
+        buttons.className = 'crate-buttons';
+        crateRows[crate.id] = {};
+        for (const amount of CRATE_AMOUNTS) {
+            const button = document.createElement('button');
+            button.className = 'item-buy';
+            button.addEventListener('click', function () {
+                openCrates(crate, amount);
+            });
+            buttons.appendChild(button);
+            crateRows[crate.id][amount] = button;
+        }
+        row.appendChild(buttons);
+        document.getElementById('crates-list').appendChild(row);
+    }
+}
+
+function updateCrates() {
+    document.getElementById('crates-score').innerText = format(points);
+    if (currentScreen !== 'crates-screen') {
+        return;
+    }
+    for (const crate of CRATES) {
+        for (const amount of CRATE_AMOUNTS) {
+            const button = crateRows[crate.id][amount];
+            button.innerText = 'Open ' + amount + ': ' + format(crate.cost * amount);
+            button.disabled = points < crate.cost * amount;
+        }
+    }
+}
+
+// One roll: picks a drop using the chances
+function rollCrate(crate) {
+    let total = 0;
+    for (const drop of crate.drops) {
+        total = total + drop.chance;
+    }
+    let pick = Math.random() * total;
+    for (const drop of crate.drops) {
+        pick = pick - drop.chance;
+        if (pick < 0) {
+            return drop;
+        }
+    }
+    return crate.drops[crate.drops.length - 1];
+}
+
+function openCrates(crate, amount) {
+    const cost = crate.cost * amount;
+    if (points < cost) {
+        return;
+    }
+    const got = {};
+    for (let i = 0; i < amount; i++) {
+        const drop = rollCrate(crate);
+        got[drop.id] = (got[drop.id] || 0) + 1;
+    }
+    // Make sure everything fits BEFORE taking your points
+    const test = cloneSlots(inventory, false);
+    for (const id of Object.keys(got)) {
+        if (!addToSlots(test, id, got[id])) {
+            showCrateResult(null, crate);
+            return;
+        }
+    }
+    for (const id of Object.keys(got)) {
+        addToSlots(inventory, id, got[id]);
+    }
+    points = points - cost;
+    unsaved = true;
+    displayDirty = true;
+    saveSoon();
+    showCrateResult(got, crate);
+}
+
+function showCrateResult(got, crate) {
+    const box = document.getElementById('crate-result');
+    box.classList.remove('hidden', 'golden');
+    box.innerHTML = '';
+    if (!got) {
+        box.innerText = 'Your inventory is full. Make some room first (nothing was taken).';
+        return;
+    }
+    const title = document.createElement('p');
+    title.className = 'crate-result-title';
+    title.innerText = 'You got:';
+    box.appendChild(title);
+    let rare = false;
+    for (const drop of crate.drops) { // always in the order of the crate, so the rare ones are last
+        if (got[drop.id]) {
+            const def = ITEM_BY_ID[drop.id];
+            const pill = document.createElement('span');
+            pill.className = 'crate-drop' + (def.golden ? ' golden' : '');
+            pill.innerText = def.emoji + ' ' + def.name + (got[drop.id] > 1 ? ' x' + got[drop.id] : '');
+            box.appendChild(pill);
+            rare = rare || !!def.golden;
+        }
+    }
+    box.classList.toggle('golden', rare);
+    // Play the little pop again, even if the last result looked the same
+    box.style.animation = 'none';
+    void box.offsetWidth;
+    box.style.animation = '';
+    if (rare) {
+        const rect = box.getBoundingClientRect();
+        burst(rect.left + rect.width / 2, rect.top + rect.height / 2, 2);
+    }
 }
 
 // =====================================================================
@@ -1189,6 +1322,7 @@ document.addEventListener('keydown', function (event) {
 });
 
 buildShop();
+buildCrates();
 buildInventory();
 
 // =====================================================================

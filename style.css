@@ -1836,3 +1836,75 @@ button.danger {
                 backdrop-filter: none;
     }
 }
+
+
+/* ---------- Crates ---------- */
+.crate-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    flex: 0 0 auto;
+}
+
+.crate-odds {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+}
+
+.crate-odd {
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: var(--rice);
+    background: rgba(247, 243, 232, 0.08);
+    border: 1px solid rgba(247, 243, 232, 0.1);
+}
+
+.crate-odd.golden,
+.crate-drop.golden {
+    color: #ffe27a;
+    border-color: rgba(255, 211, 77, 0.6);
+    background: rgba(255, 211, 77, 0.12);
+}
+
+.crate-result {
+    margin-top: 1rem;
+    padding: 0.9rem 1rem;
+    border-radius: 1.1rem;
+    text-align: center;
+    background: linear-gradient(180deg, rgba(26, 49, 40, 0.9), rgba(18, 36, 29, 0.9));
+    border: 1px solid rgba(247, 243, 232, 0.12);
+    animation: crate-pop 0.45s var(--ease-out);
+}
+
+.crate-result.hidden {
+    display: none;
+}
+
+.crate-result.golden {
+    border-color: rgba(255, 211, 77, 0.8);
+    box-shadow: 0 0 1.6rem rgba(255, 211, 77, 0.45);
+}
+
+.crate-result-title {
+    margin-bottom: 0.5rem;
+    color: var(--rice);
+}
+
+.crate-drop {
+    display: inline-block;
+    margin: 0.2rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-weight: 600;
+    background: rgba(247, 243, 232, 0.1);
+    border: 1px solid rgba(247, 243, 232, 0.18);
+}
+
+@keyframes crate-pop {
+    0% { transform: scale(0.8); opacity: 0; }
+    60% { transform: scale(1.06); opacity: 1; }
+    100% { transform: scale(1); }
+}

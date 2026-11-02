@@ -17,7 +17,9 @@ const PRICE_GROWTH = 1.15; // each one you own makes the next 15% more expensive
 const COLS = 8;
 const ROWS = 6;
 const CELL = 56;           // size of one square, in canvas pixels
-const RES = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 1))); // draw at 2x (3x on very sharp screens) so it stays crisp
+// Draw at 2x (3x on very sharp big screens) so it stays crisp. On a phone the factory is shown smaller than
+// its real size, so 2x is just as sharp there and has much fewer pixels to paint.
+const RES = Math.min(window.innerWidth < 700 ? 2 : 3, Math.max(2, Math.ceil(window.devicePixelRatio || 1)));
 const CELLS = COLS * ROWS; // squares on one factory floor
 
 // Chopping tables: little factories inside a factory (they can hold more chopping tables, forever)
@@ -1623,6 +1625,8 @@ function tryDepart(layer, s) {
     }
 }
 
+const MAX_EFFECTS = 60; // most +5 popups on one floor at the same time
+
 function sell(layer, s, x, y, multiplier) {
     const now = performance.now() / 1000;
     let gained = s.value * multiplier;
@@ -1637,8 +1641,8 @@ function sell(layer, s, x, y, multiplier) {
         points = points + gained;
         salesLog.push({ t: now, v: gained });
     }
-    if (layer === viewLayer()) {
-        // only if you can see it. A spectacular sushi gets a big golden popup with a burst of stars.
+    if (layer === viewLayer() && layer.effects.length < MAX_EFFECTS) {
+        // only if you can see it (and the floor isn't already full of popups). A spectacular sushi gets a big golden popup with a burst of stars.
         layer.effects.push({
             x: x, y: y, text: '+' + formatRate(gained), age: 0,
             big: !!s.special, life: s.special ? 1.5 : 0.9, seed: Math.random() * 6.28
@@ -1828,7 +1832,8 @@ setInterval(function () {
 //  DRAWING THE FACTORY (canvas)
 // =====================================================================
 const canvas = document.getElementById('factory-canvas');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d'); // (briefly swapped while a sprite is painted, see getSprite)
+const mainCtx = ctx;
 canvas.width = COLS * CELL * RES;
 canvas.height = ROWS * CELL * RES;
 
@@ -1920,6 +1925,106 @@ function emojiSoft(emoji, cx, cy, size) {
     glow('rgba(0, 0, 0, 0.6)', 4, 2);
     drawEmoji(emoji, cx, cy, size);
     ctx.restore();
+}
+
+// ---- Sprites: pieces are painted once into a small hidden canvas, then stamped every frame ----
+// This looks exactly the same, but is MUCH cheaper than redrawing every gradient, glow and emoji 60 times a second.
+// (ox, oy) is where the piece's own (0, 0) sits inside the sprite, so there is room for glows around it.
+let spriteCache = new Map();
+
+function getSprite(key, w, h, ox, oy, paint) {
+    let sp = spriteCache.get(key);
+    if (sp) {
+        return sp;
+    }
+    if (spriteCache.size > 2500) {
+        spriteCache = new Map(); // safety net: never let the cache grow forever
+    }
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(w * RES);
+    c.height = Math.ceil(h * RES);
+    const g = c.getContext('2d');
+    const real = ctx;
+    ctx = g;
+    ctx.setTransform(RES, 0, 0, RES, ox * RES, oy * RES);
+    try {
+        paint();
+    } finally {
+        ctx = real;
+    }
+    sp = { c: c, ox: ox, oy: oy, w: w, h: h };
+    spriteCache.set(key, sp);
+    return sp;
+}
+
+function stamp(sp, x, y, scale) {
+    if (scale === undefined) {
+        ctx.drawImage(sp.c, x - sp.ox, y - sp.oy, sp.w, sp.h);
+    } else {
+        ctx.drawImage(sp.c, x - sp.ox * scale, y - sp.oy * scale, sp.w * scale, sp.h * scale);
+    }
+}
+
+// Emoji and text fonts load a moment after the page: paint everything again once they are there
+function forgetSprites() {
+    spriteCache = new Map();
+}
+if (document.fonts) {
+    if (document.fonts.ready) {
+        document.fonts.ready.then(forgetSprites);
+    }
+    if (document.fonts.addEventListener) {
+        document.fonts.addEventListener('loadingdone', forgetSprites);
+    }
+    setTimeout(forgetSprites, 1500);
+}
+
+// Text (the numbers on sushi and the +5 popups) as a sprite too: text with an outline and a glow is slow to draw.
+// Sprite is centred on its text. kind: 'sushi', 'super', 'pop' or 'popBig'
+const TEXT_STYLES = {
+    sushi:  { font: '700 12px Fredoka, system-ui, sans-serif', line: 3.2, stroke: '#0a1511', fill: '#c6ea74', glow: null, blur: 0 },
+    super:  { font: '700 15px Fredoka, system-ui, sans-serif', line: 4,   stroke: '#3b2a12', fill: '#ffe27a', glow: null, blur: 0 },
+    pop:    { font: '700 18px Fredoka, system-ui, sans-serif', line: 4,   stroke: '#0a1511', fill: '#c6ea74', glow: 'rgba(183, 224, 90, 0.7)', blur: 6 },
+    popBig: { font: '700 26px Fredoka, system-ui, sans-serif', line: 6,   stroke: '#3b2a12', fill: '#ffe27a', glow: 'rgba(255, 210, 80, 0.9)', blur: 10 }
+};
+const measureCtx = document.createElement('canvas').getContext('2d');
+let textSprites = 0;
+
+function getTextSprite(text, kind) {
+    const key = 't|' + kind + '|' + text;
+    const have = spriteCache.get(key);
+    if (have) {
+        return have;
+    }
+    const st = TEXT_STYLES[kind];
+    measureCtx.font = st.font;
+    const pad = Math.ceil(st.line + st.blur + 6);
+    const w = Math.ceil(measureCtx.measureText(text).width) + pad * 2;
+    const h = Math.ceil(parseInt(st.font.slice(4), 10) * 1.5) + pad * 2;
+    // Numbers can be endless: keep at most 700 text sprites (the pieces' sprites stay)
+    textSprites = textSprites + 1;
+    if (textSprites > 700) {
+        for (const k of Array.from(spriteCache.keys())) {
+            if (k.charAt(0) === 't' && k.charAt(1) === '|') {
+                spriteCache.delete(k);
+            }
+        }
+        textSprites = 1;
+    }
+    return getSprite(key, w, h, w / 2, h / 2, function () {
+        ctx.font = st.font;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = st.line;
+        ctx.strokeStyle = st.stroke;
+        ctx.strokeText(text, 0, 0);
+        if (st.glow) {
+            glow(st.glow, st.blur, 0);
+        }
+        ctx.fillStyle = st.fill;
+        ctx.fillText(text, 0, 0);
+    });
 }
 
 // ---- The floor: painted once, then just stamped every frame ----
@@ -2097,20 +2202,22 @@ function drawMods(x, y, mods, time) {
     for (let k = 0; k < mods.length; k++) {
         const def = ITEM_BY_ID[mods[k]];
         const pulse = 0.5 + 0.5 * Math.sin(time * 3 + k * 1.7);
+        const level = Math.round(pulse * 6); // the pulsing glow comes in 7 steps (painted once each)
         const inset = 2 + k * 3;
         const size = CELL - 4 - k * 6;
 
-        ctx.fillStyle = withAlpha(def.colour, 0.14 + 0.06 * pulse);
-        roundedRect(x + inset, y + inset, size, size, 10);
-        ctx.fill();
-
-        ctx.save();
-        glow(def.colour, 5 + 6 * pulse, 0);
-        ctx.strokeStyle = def.colour;
-        ctx.lineWidth = 2.2;
-        roundedRect(x + inset, y + inset, size, size, 10);
-        ctx.stroke();
-        ctx.restore();
+        const edge = getSprite('modedge|' + def.id + '|' + k + '|' + level, CELL + 32, CELL + 32, 16, 16, function () {
+            const p = level / 6;
+            ctx.fillStyle = withAlpha(def.colour, 0.14 + 0.06 * p);
+            roundedRect(inset, inset, size, size, 10);
+            ctx.fill();
+            glow(def.colour, 5 + 6 * p, 0);
+            ctx.strokeStyle = def.colour;
+            ctx.lineWidth = 2.2;
+            roundedRect(inset, inset, size, size, 10);
+            ctx.stroke();
+        });
+        stamp(edge, x, y);
 
         // Golden things shimmer: a bright band sweeps across them
         if (def.golden) {
@@ -2130,14 +2237,17 @@ function drawMods(x, y, mods, time) {
 
         const bx = x + CELL - 12 - k * 15;
         const by = y + 12;
-        ctx.fillStyle = 'rgba(8, 19, 15, 0.8)';
-        ctx.beginPath();
-        ctx.arc(bx, by, 8.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = def.colour;
-        ctx.lineWidth = 1.4;
-        ctx.stroke();
-        drawEmoji(def.emoji, bx, by, 11);
+        const badge = getSprite('badge|' + def.id, 28, 28, 14, 14, function () {
+            ctx.fillStyle = 'rgba(8, 19, 15, 0.8)';
+            ctx.beginPath();
+            ctx.arc(0, 0, 8.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = def.colour;
+            ctx.lineWidth = 1.4;
+            ctx.stroke();
+            drawEmoji(def.emoji, 0, 0, 11);
+        });
+        stamp(badge, bx, by);
     }
 }
 
@@ -2163,25 +2273,27 @@ function drawStar(cx, cy, r, colour, alpha) {
 // A chopping table: a wooden tile with a tiny picture of what is inside it.
 // Like a rice cooker it shows which way it sends sushi, and it flashes when it sends one.
 function drawTable(x, y, table, dir, time, pulse) {
-    tileBase(x, y, TILE_BY_ID[TABLE_ID].colour, 10);
+    stamp(getSprite('tablebase', CELL + 16, CELL + 16, 8, 8, function () {
+        tileBase(0, 0, TILE_BY_ID[TABLE_ID].colour, 10);
 
-    // Wood grain
-    ctx.save();
-    roundedRect(x + 2, y + 2, CELL - 4, CELL - 4, 10);
-    ctx.clip();
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)';
-    ctx.lineWidth = 1;
-    for (let k = 1; k < 6; k++) {
-        ctx.beginPath();
-        ctx.moveTo(x, y + k * 9.5);
-        ctx.bezierCurveTo(x + 18, y + k * 9.5 - 2, x + 38, y + k * 9.5 + 2, x + CELL, y + k * 9.5);
+        // Wood grain
+        ctx.save();
+        roundedRect(2, 2, CELL - 4, CELL - 4, 10);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)';
+        ctx.lineWidth = 1;
+        for (let k = 1; k < 6; k++) {
+            ctx.beginPath();
+            ctx.moveTo(0, k * 9.5);
+            ctx.bezierCurveTo(18, k * 9.5 - 2, 38, k * 9.5 + 2, CELL, k * 9.5);
+            ctx.stroke();
+        }
+        ctx.restore();
+        ctx.strokeStyle = '#b48a50';
+        ctx.lineWidth = 1.6;
+        roundedRect(2.5, 2.5, CELL - 5, CELL - 5, 9.5);
         ctx.stroke();
-    }
-    ctx.restore();
-    ctx.strokeStyle = '#b48a50';
-    ctx.lineWidth = 1.6;
-    roundedRect(x + 2.5, y + 2.5, CELL - 5, CELL - 5, 9.5);
-    ctx.stroke();
+    }), x, y);
 
     const pad = 9;
     const size = (CELL - pad * 2) / COLS;
@@ -2198,7 +2310,9 @@ function drawTable(x, y, table, dir, time, pulse) {
             ctx.fillRect(x + pad + gx * size + 0.5, top + gy * size + 0.5, size - 1, size - 1);
         }
     }
-    drawEmoji(TILE_BY_ID[TABLE_ID].emoji, x + CELL - 11, y + CELL - 10, 12);
+    stamp(getSprite('tableemoji', 28, 28, 14, 14, function () {
+        drawEmoji(TILE_BY_ID[TABLE_ID].emoji, 0, 0, 12);
+    }), x + CELL - 11, y + CELL - 10);
 
     // The flash when a sushi goes out
     const since = pulse ? time - pulse : 99;
@@ -2214,22 +2328,22 @@ function drawTable(x, y, table, dir, time, pulse) {
     }
 
     // The arrow: which way the sushi comes out (golden, so it stands out on the wood)
-    ctx.save();
-    ctx.translate(x + CELL / 2, y + CELL / 2);
-    ctx.rotate((dir || 0) * Math.PI / 2);
-    glow('rgba(255, 211, 77, 0.8)', 5, 0);
-    ctx.fillStyle = '#ffd34d';
-    ctx.strokeStyle = '#3b2a12';
-    ctx.lineWidth = 2;
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(CELL * 0.27, -8);
-    ctx.lineTo(CELL * 0.47, 0);
-    ctx.lineTo(CELL * 0.27, 8);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.fill();
-    ctx.restore();
+    stamp(getSprite('tablearrow|' + (dir || 0), CELL + 16, CELL + 16, 8, 8, function () {
+        ctx.translate(CELL / 2, CELL / 2);
+        ctx.rotate((dir || 0) * Math.PI / 2);
+        glow('rgba(255, 211, 77, 0.8)', 5, 0);
+        ctx.fillStyle = '#ffd34d';
+        ctx.strokeStyle = '#3b2a12';
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(CELL * 0.27, -8);
+        ctx.lineTo(CELL * 0.47, 0);
+        ctx.lineTo(CELL * 0.27, 8);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fill();
+    }), x, y);
 }
 
 // Draws one piece in the square at (gx, gy). table: the inside of a chopping table (to draw it small).
@@ -2247,126 +2361,139 @@ function drawPiece(kind, dir, gx, gy, time, mods, table, pulse, progress) {
     }
 
     if (def.role === 'belt') {
-        tileBase(x, y, def.colour, 8);
         const fast = def.speed > 1;
 
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(dir * Math.PI / 2);
-
-        // Two side rails
-        for (const side of [-1, 1]) {
-            const ry = side * (CELL / 2 - 9);
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(-CELL / 2 + 8, ry);
-            ctx.lineTo(CELL / 2 - 8, ry);
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(-CELL / 2 + 8, ry + 1.6);
-            ctx.lineTo(CELL / 2 - 8, ry + 1.6);
-            ctx.stroke();
-        }
+        // The belt itself (tile + two side rails) is painted once per direction
+        stamp(getSprite('belt|' + kind + '|' + dir, CELL + 16, CELL + 16, 8, 8, function () {
+            tileBase(0, 0, def.colour, 8);
+            ctx.translate(CELL / 2, CELL / 2);
+            ctx.rotate(dir * Math.PI / 2);
+            for (const side of [-1, 1]) {
+                const ry = side * (CELL / 2 - 9);
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(-CELL / 2 + 8, ry);
+                ctx.lineTo(CELL / 2 - 8, ry);
+                ctx.stroke();
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(-CELL / 2 + 8, ry + 1.6);
+                ctx.lineTo(CELL / 2 - 8, ry + 1.6);
+                ctx.stroke();
+            }
+        }), x, y);
 
         // Moving chevrons that point the way the belt goes. They fade in and out at the ends.
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        const cellNow = { kind: kind, mods: mods || [] };
-        const phase = (time * SPEED * speedMultiplier(cellNow)) % 1;
-        for (let k = 0; k < 3; k++) {
-            const t = (phase + k / 3) % 1;
-            const px = (t - 0.5) * CELL * 0.86;
-            const a = Math.sin(t * Math.PI);
-            ctx.save();
+        const chevron = getSprite('chevron|' + (fast ? 'fast' : 'norm'), 44, 44, 22, 22, function () {
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
             if (fast) {
                 glow('rgba(255, 226, 120, 0.9)', 5, 0);
             }
-            ctx.strokeStyle = fast ? 'rgba(255, 226, 120, ' + (0.9 * a) + ')' : 'rgba(247, 243, 232, ' + (0.62 * a) + ')';
+            ctx.strokeStyle = fast ? 'rgba(255, 226, 120, 0.9)' : 'rgba(247, 243, 232, 0.62)';
             ctx.lineWidth = 3.2;
             ctx.beginPath();
-            ctx.moveTo(px - 5, -8);
-            ctx.lineTo(px + 3, 0);
-            ctx.lineTo(px - 5, 8);
+            ctx.moveTo(-5, -8);
+            ctx.lineTo(3, 0);
+            ctx.lineTo(-5, 8);
             ctx.stroke();
-            ctx.restore();
+        });
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(dir * Math.PI / 2);
+        const cellNow = { kind: kind, mods: mods || [] };
+        const phase = (time * SPEED * speedMultiplier(cellNow)) % 1;
+        const baseAlpha = ctx.globalAlpha; // (less than 1 for the see-through preview)
+        for (let k = 0; k < 3; k++) {
+            const t = (phase + k / 3) % 1;
+            ctx.globalAlpha = baseAlpha * Math.sin(t * Math.PI);
+            stamp(chevron, (t - 0.5) * CELL * 0.86, 0);
         }
         ctx.restore();
         drawMods(x, y, mods, time);
         return;
     }
 
-    // Machines: a coloured tile with an emoji on it
-    tileBase(x, y, def.colour, 10);
+    // Machines: a coloured tile with an emoji on it (painted once, then stamped)
+    stamp(getSprite('tile|' + kind, CELL + 16, CELL + 16, 8, 8, function () {
+        tileBase(0, 0, def.colour, 10);
+        // A coloured line along the bottom says what kind of machine it is
+        ctx.fillStyle = MINI_COLOUR[def.role];
+        ctx.globalAlpha = 0.75;
+        roundedRect(15, CELL - 9, CELL - 30, 2.5, 1.25);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }), x, y);
 
-    // A coloured line along the bottom says what kind of machine it is
-    ctx.fillStyle = MINI_COLOUR[def.role];
-    ctx.globalAlpha = 0.75;
-    roundedRect(x + 15, y + CELL - 9, CELL - 30, 2.5, 1.25);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // Serving counters glow like paper lanterns
+    // Serving counters glow like paper lanterns (the glow breathes, so it is stamped with a changing strength)
     if (def.role === 'exit') {
         const lit = 0.18 + 0.12 * Math.sin(time * 2.4 + gx + gy);
-        const lamp = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.55);
-        lamp.addColorStop(0, 'rgba(255, 170, 90, ' + (lit + 0.12) + ')');
-        lamp.addColorStop(1, 'rgba(255, 140, 60, 0)');
-        ctx.fillStyle = lamp;
-        ctx.fillRect(x, y, CELL, CELL);
+        const baseAlpha = ctx.globalAlpha;
+        ctx.globalAlpha = baseAlpha * Math.min(1, lit + 0.12);
+        stamp(getSprite('lamp', CELL, CELL, 0, 0, function () {
+            const lamp = ctx.createRadialGradient(CELL / 2, CELL / 2, 2, CELL / 2, CELL / 2, CELL * 0.55);
+            lamp.addColorStop(0, 'rgba(255, 170, 90, 1)');
+            lamp.addColorStop(1, 'rgba(255, 140, 60, 0)');
+            ctx.fillStyle = lamp;
+            ctx.fillRect(0, 0, CELL, CELL);
+        }), x, y);
+        ctx.globalAlpha = baseAlpha;
     }
 
-    // A soft plate under the emoji
-    const plate = ctx.createRadialGradient(cx, cy - 3, 1, cx, cy, 19);
-    plate.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
-    plate.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = plate;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 19, 0, Math.PI * 2);
-    ctx.fill();
-
-    emojiSoft(def.emoji, cx, cy - 1, 28);
+    // A soft plate under the emoji, and the emoji
+    stamp(getSprite('face|' + kind, CELL + 16, CELL + 16, 8, 8, function () {
+        const plate = ctx.createRadialGradient(CELL / 2, CELL / 2 - 3, 1, CELL / 2, CELL / 2, 19);
+        plate.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
+        plate.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = plate;
+        ctx.beginPath();
+        ctx.arc(CELL / 2, CELL / 2, 19, 0, Math.PI * 2);
+        ctx.fill();
+        emojiSoft(def.emoji, CELL / 2, CELL / 2 - 1, 28);
+    }), x, y);
 
     // The rice cooker's progress ring: it fills up, then a rice ball pops out
+    // (painted in 90 steps, once each)
     if (def.role === 'source' && progress !== undefined) {
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 22, 0, Math.PI * 2);
-        ctx.stroke();
-        if (progress > 0.01) {
-            glow('rgba(183, 224, 90, 0.8)', 4, 0);
-            ctx.strokeStyle = '#c6ea74';
+        const step = Math.round(Math.min(1, Math.max(0, progress)) * 90);
+        stamp(getSprite('ring|' + step, CELL + 16, CELL + 16, 8, 8, function () {
+            ctx.lineCap = 'round';
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
             ctx.beginPath();
-            ctx.arc(cx, cy, 22, -Math.PI / 2, -Math.PI / 2 + Math.min(1, progress) * Math.PI * 2);
+            ctx.arc(CELL / 2, CELL / 2, 22, 0, Math.PI * 2);
             ctx.stroke();
-        }
-        ctx.restore();
+            if (step > 0) {
+                glow('rgba(183, 224, 90, 0.8)', 4, 0);
+                ctx.strokeStyle = '#c6ea74';
+                ctx.beginPath();
+                ctx.arc(CELL / 2, CELL / 2, 22, -Math.PI / 2, -Math.PI / 2 + (step / 90) * Math.PI * 2);
+                ctx.stroke();
+            }
+        }), x, y);
     }
 
     drawMods(x, y, mods, time);
 
     // The rice cooker also shows which way it sends sushi
     if (def.role === 'source') {
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(dir * Math.PI / 2);
-        glow('rgba(255, 122, 77, 0.9)', 5, 0);
-        ctx.fillStyle = '#ff8a5c';
-        ctx.strokeStyle = 'rgba(60, 20, 5, 0.7)';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(CELL * 0.3, -7);
-        ctx.lineTo(CELL * 0.46, 0);
-        ctx.lineTo(CELL * 0.3, 7);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
+        stamp(getSprite('srcarrow|' + dir, CELL + 16, CELL + 16, 8, 8, function () {
+            ctx.translate(CELL / 2, CELL / 2);
+            ctx.rotate(dir * Math.PI / 2);
+            glow('rgba(255, 122, 77, 0.9)', 5, 0);
+            ctx.fillStyle = '#ff8a5c';
+            ctx.strokeStyle = 'rgba(60, 20, 5, 0.7)';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(CELL * 0.3, -7);
+            ctx.lineTo(CELL * 0.46, 0);
+            ctx.lineTo(CELL * 0.3, 7);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }), x, y);
     }
 }
 
@@ -2374,7 +2501,7 @@ function drawPiece(kind, dir, gx, gy, time, mods, table, pulse, progress) {
 
 // The spectacular sushi a chopping table sends out: a glowing golden nigiri with spinning rays and sparkles
 // lite = true when there are very many of them on the floor: no rays or number, a flat glow, one sparkle
-function drawSuperSushi(cx, cy, value, time, seed, lite) {
+function drawSuperSushi(cx, cy, value, time, seed, lite, label) {
     const beat = 0.5 + 0.5 * Math.sin(time * 6 + seed);
     const r = CELL * (0.62 + 0.07 * beat);
 
@@ -2463,21 +2590,14 @@ function drawSuperSushi(cx, cy, value, time, seed, lite) {
     if (lite) {
         return;
     }
-    const text = formatRate(value);
-    ctx.font = '700 15px Fredoka, system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#3b2a12';
-    ctx.strokeText(text, cx, cy - h / 2 - 17);
-    ctx.fillStyle = '#ffe27a';
-    ctx.fillText(text, cx, cy - h / 2 - 17);
+    stamp(getTextSprite(label || formatRate(value), 'super'), cx, cy - h / 2 - 17);
 }
 
 // A little piece of nigiri
 // A plain rice ball (before a fish) or complete sushi (after a fish)
-function drawSushi(cx, cy, value, complete) {
+function paintSushi(complete, auraAlpha) {
+    const cx = 0;
+    const cy = 0;
     const w = CELL * 0.5;
     const h = CELL * 0.3;
 
@@ -2509,9 +2629,9 @@ function drawSushi(cx, cy, value, complete) {
         }
     } else {
         // A rich sushi (worth a lot) gets a faint golden aura
-        if (value >= 20) {
+        if (auraAlpha > 0) {
             const aura = ctx.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.5);
-            aura.addColorStop(0, 'rgba(255, 210, 100, ' + Math.min(0.4, 0.15 + value / 2000) + ')');
+            aura.addColorStop(0, 'rgba(255, 210, 100, ' + auraAlpha + ')');
             aura.addColorStop(1, 'rgba(255, 210, 100, 0)');
             ctx.fillStyle = aura;
             ctx.beginPath();
@@ -2557,17 +2677,21 @@ function drawSushi(cx, cy, value, complete) {
         ctx.fill();
         ctx.restore();
     }
+}
+
+function drawSushi(cx, cy, value, complete, label) {
+    const h = CELL * 0.3;
+    // A rich sushi (worth a lot) gets a faint golden aura: its strength comes in a few steps
+    let level = 0;
+    if (complete && value >= 20) {
+        level = Math.round(Math.min(0.4, 0.15 + value / 2000) * 50);
+    }
+    stamp(getSprite('sushi|' + (complete ? 1 : 0) + '|' + level, 72, 72, 36, 36, function () {
+        paintSushi(complete, level / 50);
+    }), cx, cy);
 
     if (value > 1) {
-        ctx.font = '700 12px Fredoka, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = 3.2;
-        ctx.strokeStyle = '#0a1511';
-        ctx.strokeText(formatRate(value), cx, cy - h / 2 - 11);
-        ctx.fillStyle = '#c6ea74';
-        ctx.fillText(formatRate(value), cx, cy - h / 2 - 11);
+        stamp(getTextSprite(label || formatRate(value), 'sushi'), cx, cy - h / 2 - 11);
     }
 }
 
@@ -2585,11 +2709,26 @@ function popAge(cell, index, time, staggerNew) {
     return time - t0;
 }
 
+// Frame pacing: never draw more than ~60 times a second (a 120 Hz phone would do double the work for nothing).
+// If a device still can't keep up, it draws 30 times a second instead, which is smoother than stuttering.
+let lastFrameAt = 0;
+let frameGap = 15;      // ms between frames
+let frameCost = 0;      // how long drawing takes (smoothed)
+let lastDisplayAt = 0;
+
 function draw() {
     requestAnimationFrame(draw);
 
-    // Keep the numbers fresh on every screen (shop and inventory too)
-    if (displayDirty) {
+    const nowMs = performance.now();
+    if (nowMs - lastFrameAt < frameGap) {
+        return;
+    }
+    lastFrameAt = nowMs;
+
+    // Keep the numbers fresh on every screen (shop and inventory too), at most 10 times a second:
+    // changing lots of text every frame is slow, especially on a phone
+    if (displayDirty && nowMs - lastDisplayAt >= 100) {
+        lastDisplayAt = nowMs;
         updateDisplay();
         displayDirty = false;
     }
@@ -2599,6 +2738,17 @@ function draw() {
         return;
     }
 
+    drawFactory();
+
+    frameCost = frameCost * 0.9 + (performance.now() - nowMs) * 0.1;
+    if (frameCost > 20 && frameGap < 30) {
+        frameGap = 33;
+    } else if (frameCost < 11 && frameGap > 20) {
+        frameGap = 15;
+    }
+}
+
+function drawFactory() {
     const time = performance.now() / 1000;
     const layer = viewLayer();
     ctx.setTransform(RES, 0, 0, RES, 0, 0);
@@ -2669,10 +2819,14 @@ function draw() {
             gx = s.x + (s.tx - s.x) * s.p;
             gy = s.y + (s.ty - s.y) * s.p;
         }
+        if (s.shown !== s.value) {
+            s.shown = s.value; // only turn the number into text when it changed
+            s.label = formatRate(s.value);
+        }
         if (s.special) {
-            drawSuperSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, time, s.seed, layer.nSpecial > LITE_AFTER);
+            drawSuperSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, time, s.seed, layer.nSpecial > LITE_AFTER, s.label);
         } else {
-            drawSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, s.complete);
+            drawSushi((gx + 0.5) * CELL, (gy + 0.5) * CELL, s.value, s.complete, s.label);
         }
     }
 
@@ -2725,16 +2879,7 @@ function draw() {
         const pop = 1 + 0.4 * Math.max(0, 1 - effect.age * 7);
         ctx.save();
         ctx.globalAlpha = fade;
-        ctx.font = (effect.big ? '700 ' + 26 * pop + 'px' : '700 ' + 18 * pop + 'px') + ' Fredoka, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = effect.big ? 6 : 4;
-        ctx.strokeStyle = effect.big ? '#3b2a12' : '#0a1511';
-        ctx.strokeText(effect.text, bx, effect.y * CELL - rise + 8);
-        glow(effect.big ? 'rgba(255, 210, 80, 0.9)' : 'rgba(183, 224, 90, 0.7)', effect.big ? 10 : 6, 0);
-        ctx.fillStyle = effect.big ? '#ffe27a' : '#c6ea74';
-        ctx.fillText(effect.text, bx, effect.y * CELL - rise + 8);
+        stamp(getTextSprite(effect.text, effect.big ? 'popBig' : 'pop'), bx, effect.y * CELL - rise + 8, pop);
         ctx.restore();
     }
 

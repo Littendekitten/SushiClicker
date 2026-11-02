@@ -150,6 +150,21 @@ for (const chain of MERGE_CHAINS) {
 }
 
 // The Remove tool is not an item, it is a button next to the hotbar
+// ---- Crates (the Crates screen): you pay points and get a random item
+//   cost:   points for one crate
+//   drops:  what can come out. "chance" is a percent, and all the chances of a crate should add up to 100
+export const CRATES = [
+    {
+        id: 'common', name: 'Common crate', emoji: '📦', cost: 1e9,
+        drops: [
+            { id: 'soy_sauce',        chance: 70 },
+            { id: 'spicy_drink',      chance: 20 },
+            { id: 'wasabi',           chance: 8 },
+            { id: 'golden_soy_sauce', chance: 2 }
+        ]
+    }
+];
+
 export const REMOVE_TOOL = {
     id: 'remove', name: 'Remove', emoji: '🗑️',
     hint: 'Click a piece to take it back. Upgrades on it (soy sauce, wasabi...) come off first, one by one.'

@@ -70,6 +70,7 @@
                     <span class="chopsticks-detail">+1 per click, <span id="chopsticks-cost">10</span> points</span>
                 </button>
                 <button class="quiet" data-goto="shop-screen">🛒 Shop</button>
+                <button class="quiet" data-goto="crates-screen">📦 Crates</button>
                 <button class="quiet" data-goto="inventory-screen">🎒 Inventory</button>
                 <button id="anvil-btn" class="quiet hidden" data-goto="anvil-screen">⚒️ Anvil</button>
                 <button class="quiet" data-goto="trade-screen">🤝 Trade</button>
@@ -120,6 +121,16 @@
     </section>
 
     <!-- The shop: buy tiles (they go to your inventory) and unlock the anvil -->
+    <section id="crates-screen" class="screen hidden">
+        <div class="panel">
+            <h1>Crates</h1>
+            <p>Points: <span id="crates-score" class="points-text">0</span></p>
+            <div id="crates-list" class="item-list"></div>
+            <div id="crate-result" class="crate-result hidden"></div>
+        </div>
+        <button class="quiet" data-goto="game-screen">Back to factory</button>
+    </section>
+
     <section id="shop-screen" class="screen hidden">
         <div class="panel">
             <h1>Shop</h1>

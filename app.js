@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
-import { doc, getDoc, getDocs, setDoc, writeBatch, collection, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
+import { doc, getDoc, getDocs, setDoc, deleteDoc, writeBatch, collection, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import { TILES, EQUIPS, RECIPES, CRATES, REMOVE_TOOL, EDIT_TOOL, TILE_BY_ID, ITEM_BY_ID } from "./data.js";
 import { auth, db } from "./firebase.js";
 import { burst, syncRanges } from "./fx.js";
@@ -3907,6 +3907,34 @@ document.getElementById('code-input').addEventListener('keydown', function (even
 let boardLoading = false;
 
 // quiet = an automatic refresh: no "Loading..." text and no extra save
+// A player who no longer exists (their users/{uid} document is gone) can't take their leaderboard entry away
+// themselves, so whoever looks at the board does it. The Firestore rules only allow this deletion when that
+// player's document really is gone, so entries of real players are refused (and left alone).
+// Every entry is only tried once per 5 minutes, so this is a handful of checks, not a flood.
+const ghostChecked = {}; // leaderboard id -> when it was last checked
+
+async function removeGhosts(snap) {
+    const now = Date.now();
+    const checks = [];
+    snap.forEach(function (entry) {
+        if (currentUser && entry.id === currentUser.uid) {
+            return; // you can't be a ghost: you are playing
+        }
+        if (ghostChecked[entry.id] && now - ghostChecked[entry.id] < 300000) {
+            return;
+        }
+        ghostChecked[entry.id] = now;
+        checks.push(
+            deleteDoc(doc(db, 'leaderboard', entry.id)).then(
+                function () { return true; },     // deleted: they were gone
+                function () { return false; }     // refused: they are a real player
+            )
+        );
+    });
+    const results = await Promise.all(checks);
+    return results.indexOf(true) !== -1;
+}
+
 async function loadLeaderboard(quiet) {
     if (boardLoading) {
         return;
@@ -3923,7 +3951,11 @@ async function loadLeaderboard(quiet) {
             await save();
         }
 
-        const snap = await getDocs(query(collection(db, 'leaderboard'), orderBy('points', 'desc'), limit(10)));
+        let snap = await getDocs(query(collection(db, 'leaderboard'), orderBy('points', 'desc'), limit(10)));
+        // Players whose account is gone are taken off the board, and the next players move up
+        if (await removeGhosts(snap)) {
+            snap = await getDocs(query(collection(db, 'leaderboard'), orderBy('points', 'desc'), limit(10)));
+        }
         list.innerHTML = '';
         let rank = 0;
         snap.forEach(function (entry) {

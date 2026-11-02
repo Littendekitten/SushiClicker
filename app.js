@@ -1329,6 +1329,14 @@ buildInventory();
 //  THE ANVIL: two slots. Put items in and see what comes out (like Minecraft).
 //  There is no recipe list: players have to work it out themselves.
 // =====================================================================
+// Every craft costs a part of your points: 5% of what you have. It is per craft, not per item you get.
+// (Shift-click that makes several crafts in a row pays for each one, so each next craft is 5% of what is left.)
+const ANVIL_FEE = 0.05;
+
+function anvilFee(crafts) {
+    return points * (1 - Math.pow(1 - ANVIL_FEE, crafts));
+}
+
 // What do the two input slots make? The order and the slots don't matter, only what
 // is in them: the same items as a recipe, at least as many as it needs.
 function anvilRecipe() {
@@ -1393,10 +1401,12 @@ function takeOutput(all) {
                 takeFromAnvil(need.id, need.n * count);
             }
             inventory = copy;
+            const fee = anvilFee(count);
+            points = points - fee;
             unsaved = true;
             displayDirty = true;
             saveSoon();
-            setMessage('anvil-msg', 'You made ' + (recipe.n * count) + ' x ' + ITEM_BY_ID[recipe.out].name + '!', 'good');
+            setMessage('anvil-msg', 'You made ' + (recipe.n * count) + ' x ' + ITEM_BY_ID[recipe.out].name + '! (It cost ' + format(fee) + ' points.)', 'good');
             return;
         }
     }
@@ -1445,6 +1455,8 @@ function updateAnvil() {
     const recipe = anvilRecipe();
     paintSlot(anvilOutPart, recipe ? { id: recipe.out, n: recipe.n } : null);
     anvilOutPart.button.classList.toggle('ready', !!recipe);
+    document.getElementById('anvil-cost').innerText = 'Every craft costs ' + Math.round(ANVIL_FEE * 100) +
+        '% of your points' + (recipe ? ': ' + format(anvilFee(1)) + ' for this one.' : '.');
 }
 buildAnvil();
 

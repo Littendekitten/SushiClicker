@@ -1823,3 +1823,16 @@ button.danger {
 .game-table-slot.hidden {
     display: none;
 }
+
+/* Phones and tablets: a live blur behind a panel is redone every time anything behind it moves, which is slow.
+   The glass panels are already see-through gradients over soft glows, so they look the same without it. */
+@media (hover: none) and (pointer: coarse) {
+    #logout-btn,
+    .quiet,
+    [data-goto="menu-screen"],
+    .factory,
+    .panel {
+        -webkit-backdrop-filter: none;
+                backdrop-filter: none;
+    }
+}

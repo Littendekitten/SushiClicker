@@ -206,30 +206,33 @@ resetGame();
 // =====================================================================
 // Big numbers get a letter: 1,474,879 -> "1.47M". Below one million we
 // show the whole number with commas, like before.
-const SUFFIXES = ['M', 'B', 'T', 'Qa', 'Qi', 'Sx', 'Sp', 'Oc', 'No', 'Dc',
-                  'Ud', 'Dd', 'Td', 'Qad', 'Qid', 'Sxd', 'Spd', 'Ocd', 'Nod', 'Vg'];
+const NAMED_SUFFIXES = ['M', 'B', 'T', 'Qa', 'Qi', 'Sx', 'Sp', 'Oc', 'No', 'Dc',
+                        'Ud', 'Dd', 'Td', 'Qad', 'Qid', 'Sxd', 'Spd', 'Ocd', 'Nod', 'Vg'];
+
+// After the named ones the letters continue like most idle games: aa, ab, ac ... az, ba ... zz
+// (that reaches past 10^2000, far more than a number in the game can ever be, so there is never an "e")
+function suffixFor(group) {
+    if (group < NAMED_SUFFIXES.length) return NAMED_SUFFIXES[group];
+    const n = group - NAMED_SUFFIXES.length;                 // 0 = aa, 1 = ab, ...
+    const first = Math.floor(n / 26) % 26;
+    return String.fromCharCode(97 + first) + String.fromCharCode(97 + (n % 26));
+}
 
 // Returns the shortened text, or null when the number is too small to shorten
 function abbreviate(number) {
     if (!(number >= 1000000)) return null;
+    if (!isFinite(number)) return '∞';
     // How many groups of 3 digits are there above the first million?
     let group = Math.floor(Math.log10(number) / 3) - 2;      // 0 = M, 1 = B, ...
-    if (group >= SUFFIXES.length) {
-        // Bigger than the last letter: 1.23e66 (so the number never gets longer than the screen)
-        if (!isFinite(number)) return '∞';
-        const exponent = Math.floor(Math.log10(number));
-        const mantissa = Math.floor(number / Math.pow(10, exponent) * 100) / 100;
-        return String(mantissa) + 'e' + exponent;
-    }
     let scaled = number / Math.pow(1000, group + 2);
     // Cut off (don't round) to 2 decimals, so 999,999,999 never shows as "1000M"
     scaled = Math.floor(scaled * 100) / 100;
     // Safety net for floating point: 1000M should become 1B
-    if (scaled >= 1000 && group < SUFFIXES.length - 1) {
+    if (scaled >= 1000) {
         group++;
         scaled = 1;
     }
-    return String(scaled) + SUFFIXES[group];                  // 1.5 -> "1.5M", 2 -> "2M"
+    return String(scaled) + suffixFor(group);                 // 1.5 -> "1.5M", 2 -> "2M"
 }
 
 function format(number) {
